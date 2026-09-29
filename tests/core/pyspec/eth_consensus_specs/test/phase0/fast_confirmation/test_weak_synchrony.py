@@ -10,6 +10,52 @@ from eth_consensus_specs.test.helpers.fast_confirmation import FCRTest
 
 @with_altair_and_later
 @spec_state_test
+@with_presets([MINIMAL], reason="genesis broadcast certificate regression")
+@never_bls
+def test_genesis_head_has_no_broadcast_certificate(spec, state):
+    """The head cannot be certified before any slot has completed."""
+    fcr = FCRTest(spec, seed=1)
+    store, fcr_store = fcr.initialize(state)
+
+    assert spec.get_current_slot(store) == spec.GENESIS_SLOT
+    assert not spec.has_head_broadcast_certificate(
+        store, spec.get_current_balance_source(fcr_store)
+    )
+    yield from fcr.get_test_artefacts()
+
+
+@with_altair_and_later
+@spec_state_test
+@with_presets([MINIMAL], reason="genesis broadcast certificate regression")
+@never_bls
+def test_genesis_justification_witness_has_no_broadcast_certificate(spec, state):
+    """The justification witness cannot be certified before any slot has completed."""
+    fcr = FCRTest(spec, seed=1)
+    store, fcr_store = fcr.initialize(state)
+
+    assert spec.get_current_slot(store) == spec.GENESIS_SLOT
+    assert not spec.has_justification_witness_certificate(fcr_store)
+    yield from fcr.get_test_artefacts()
+
+
+@with_altair_and_later
+@spec_state_test
+@with_presets([MINIMAL], reason="genesis fast confirmation regression")
+@never_bls
+def test_on_fast_confirmation_at_genesis(spec, state):
+    """Fast confirmation must be safe to run in the first part of the genesis slot."""
+    fcr = FCRTest(spec, seed=1)
+    store, fcr_store = fcr.initialize(state)
+    confirmed_root = fcr_store.confirmed_root
+
+    assert spec.get_current_slot(store) == spec.GENESIS_SLOT
+    fcr.run_fast_confirmation()
+    assert fcr_store.confirmed_root == confirmed_root
+    yield from fcr.get_test_artefacts()
+
+
+@with_altair_and_later
+@spec_state_test
 @with_presets([MINIMAL], reason="epoch boundary regression")
 @never_bls
 def test_certified_banking_preserves_genesis_anchor(spec, state):
