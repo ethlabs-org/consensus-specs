@@ -865,7 +865,11 @@ def has_head_broadcast_certificate(store: Store, balance_source: BeaconState) ->
     """
     head = get_head(store).root
     return has_broadcast_certificate(
-        store, balance_source, head, get_block_slot(store, head), get_current_slot(store) - 1
+        store,
+        balance_source,
+        head,
+        get_block_slot(store, head),
+        saturating_sub(get_current_slot(store), 1),
     )
 ```
 
@@ -890,7 +894,7 @@ def has_justification_witness_certificate(fcr_store: FastConfirmationStore) -> b
         get_current_balance_source(fcr_store),
         witness,
         get_block_slot(store, witness),
-        get_current_slot(store) - 1,
+        saturating_sub(get_current_slot(store), 1),
     )
 ```
 
