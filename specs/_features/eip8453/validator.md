@@ -78,7 +78,7 @@ attestations are included on chain.
 @dataclass
 class FinalitySigningRecord:
     targets: dict[Height, Root]
-    timeouts: set[Height]
+    timeouts: dict[Height, set[Root]]
     finality_locks: dict[Height, Root]
     entries: dict[Height, set[Root]]
 ```
@@ -87,7 +87,7 @@ The fields are initialized empty for a validator with no prior EIP-8453 signing
 history:
 
 - `targets[h]`: the first target voted for at height `h`.
-- `timeouts`: heights at which a timeout was signed.
+- `timeouts[h]`: the targets named by timeouts signed at height `h`.
 - `finality_locks[h]`: the block named by a finality vote at height `h`.
 - `entries[h]`: entries named by any height vote at height `h`.
 
@@ -320,7 +320,7 @@ def get_finality_vote(
         return HeightCheckpoint.empty()
     if record.targets.get(height) not in (None, root):
         return HeightCheckpoint.empty()
-    if height in record.timeouts:
+    if not record.timeouts.get(height, set()) <= {root}:
         return HeightCheckpoint.empty()
     if record.finality_locks.get(height) not in (None, root):
         return HeightCheckpoint.empty()
@@ -345,12 +345,10 @@ def get_height_vote(
     if finality != HeightCheckpoint.empty() and finality.height == height:
         lock = finality.root
 
+    if lock is not None and lock != root:
+        return None
     if height in record.timeouts:
         return target.copy(), True
-    if lock is not None:
-        if lock == root:
-            return target.copy(), False
-        return None
     if record.targets.get(height) in (None, root):
         return target.copy(), False
     return target.copy(), True
@@ -402,7 +400,7 @@ def record_finality_attestation(record: FinalitySigningRecord, data: Attestation
     if data.finality != HeightCheckpoint.empty():
         record.finality_locks[data.finality.height] = data.finality.root
     if data.timeout:
-        record.timeouts.add(height)
+        record.timeouts.setdefault(height, set()).add(root)
     else:
         record.targets.setdefault(height, root)
 ```
