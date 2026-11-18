@@ -6,6 +6,7 @@
 
 - [Introduction](#introduction)
 - [Types](#types)
+  - [New `AttestationCommittee`](#new-attestationcommittee)
   - [New `AttestationCommitteeBits`](#new-attestationcommitteebits)
   - [New `HeadVoteCommittee`](#new-headvotecommittee)
   - [New `HeadVoteCommitteeBits`](#new-headvotecommitteebits)
@@ -180,6 +181,15 @@ quorum.
 *Note*: This specification is built upon [Heze](../../heze/beacon-chain.md).
 
 ## Types
+
+### New `AttestationCommittee`
+
+```python
+class AttestationCommittee(ProgressiveList[ValidatorIndex]):
+    """
+    An attestation committee of an epoch.
+    """
+```
 
 ### New `AttestationCommitteeBits`
 
@@ -1059,17 +1069,21 @@ active in a state whose target is in `epoch` is eligible for activation by
 ```python
 def get_attestation_committee(
     state: BeaconState, epoch: Epoch, index: CommitteeIndex
-) -> Sequence[ValidatorIndex]:
+) -> AttestationCommittee:
     """
     Return the attestation committee at ``index`` for ``epoch``.
     """
-    return [
-        ValidatorIndex(validator_index)
-        for validator_index in range(index, len(state.validators), ATTESTATION_COMMITTEES_PER_ROUND)
-        if state.validators[validator_index].activation_eligibility_epoch
-        <= epoch
-        < state.validators[validator_index].exit_epoch
-    ]
+    return AttestationCommittee(
+        data=[
+            ValidatorIndex(validator_index)
+            for validator_index in range(
+                index, len(state.validators), ATTESTATION_COMMITTEES_PER_ROUND
+            )
+            if state.validators[validator_index].activation_eligibility_epoch
+            <= epoch
+            < state.validators[validator_index].exit_epoch
+        ]
+    )
 ```
 
 #### New `get_attestation_epoch`
