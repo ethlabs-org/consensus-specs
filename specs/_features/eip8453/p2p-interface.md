@@ -190,7 +190,7 @@ def is_finalized_ancestor(store: Store, state: BeaconState, root: Root) -> bool:
 ### New `get_latest_attestation_committee_slot`
 
 *Note*: FG attestations carry no slot. On gossip, an attestation belongs to the
-latest slot of its committee that has started, which fixes its round and epoch.
+latest slot of its committee that has started, which fixes its round.
 
 ```python
 def get_latest_attestation_committee_slot(
@@ -512,10 +512,6 @@ def validate_attestation_gossip(
     if attestation_round_key in seen.attestation_validator_rounds:
         raise GossipIgnore("already seen attestation for this round and validator")
 
-    # [IGNORE] The attestation's epoch is the epoch of its committee's slot
-    if attestation.epoch != compute_epoch_at_slot(slot):
-        raise GossipIgnore("attestation epoch is not the epoch of its committee's slot")
-
     # [REJECT] The attestation data is well formed
     if not is_well_formed_attestation_data(data):
         raise GossipReject("attestation data is not well formed")
@@ -536,13 +532,19 @@ def validate_attestation_gossip(
         raise GossipIgnore("finalized block is not an ancestor of the target block")
 
     # [REJECT] The attester is a member of the committee
-    committee = get_attestation_committee(state, attestation.epoch, committee_index)
+    # (the committees and the signature domain are those of the target's epoch)
+    epoch = compute_epoch_at_slot(store.blocks[data.target.root].slot)
+    committee = get_attestation_committee(state, epoch, committee_index)
     if attester_index not in committee:
         raise GossipReject("attester is not a member of the committee")
 
+    # [IGNORE] The attester is active
+    if not is_active_validator(state.validators[attester_index], get_current_epoch(state)):
+        raise GossipIgnore("attester is not active")
+
     # [REJECT] The attestation signature is valid
     attester = state.validators[attester_index]
-    domain = get_domain(state, DOMAIN_FINALITY_ATTESTER, attestation.epoch)
+    domain = get_domain(state, DOMAIN_FINALITY_ATTESTER, epoch)
     signing_root = compute_signing_root(data, domain)
     if not bls.Verify(attester.pubkey, signing_root, attestation.signature):
         raise GossipReject("invalid attestation signature")

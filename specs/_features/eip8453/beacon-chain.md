@@ -74,6 +74,7 @@
     - [New `get_current_round`](#new-get_current_round)
     - [New `get_previous_round`](#new-get_previous_round)
     - [New `get_attestation_committee`](#new-get_attestation_committee)
+    - [New `get_attestation_epoch`](#new-get_attestation_epoch)
     - [New `get_aggregate_participants`](#new-get_aggregate_participants)
     - [Modified `get_attesting_indices`](#modified-get_attesting_indices)
     - [Modified `get_indexed_attestation`](#modified-get_indexed_attestation)
@@ -147,12 +148,14 @@ of their slot, which weighs builder payments.
 
 Validators cast FG attestations in rounds of `SLOTS_PER_ROUND` slots. A round is
 to the FG what an epoch is to Casper FFG: each active validator attests once,
-and the FG settles rewards and inactivity at its end, in `process_round`. Once
-per epoch, the active validators are split into
-`ATTESTATION_COMMITTEES_PER_ROUND` attestation committees, spread evenly over
-the slots of a round. Each validator sits on one committee and, in every round,
-casts its FG attestation in that committee's slot. Aggregates combine the
-attestations of several committees.
+and the FG settles rewards and inactivity at its end, in `process_round`. Each
+validator sits on the attestation committee given by its index modulo
+`ATTESTATION_COMMITTEES_PER_ROUND`, and committees are spread evenly over the
+slots of a round. In every round, an active validator casts its FG attestation
+in its committee's slot. A block includes only attestations for the chain's
+current target. Their bits are laid out in the committees of the target's epoch,
+so an aggregate keeps one encoding for as long as it can be included. Aggregates
+combine the attestations of several committees.
 
 Validators are rewarded per round, as in Altair, with two participation flags.
 The progress flag is earned by a target vote or a timeout counted at the current
@@ -513,29 +516,30 @@ class SingleAttestation(Container):
     attester_index: ValidatorIndex
     data: AttestationData
     signature: BLSSignature
-    # [New in EIP8453]
-    epoch: Epoch
 ```
 
 ### Modified `Attestation`
 
-*Note*: `epoch` is not signed. It selects the attestation committees that
-`committee_bits` and `aggregation_bits` refer to, and the signature domain.
+*Note*: An attestation carries no epoch. Its committees and signature domain are
+those of the epoch of the target slot of the state that includes it (see
+`get_attestation_epoch`).
 
 ```python
 class Attestation(ProgressiveContainer):
-    ACTIVE_FIELDS = active_fields(width=5)
+    ACTIVE_FIELDS = active_fields(width=4)
 
     aggregation_bits: AggregationBits
     data: AttestationData
     signature: BLSSignature
     # [Modified in EIP8453]
     committee_bits: AttestationCommitteeBits
-    # [New in EIP8453]
-    epoch: Epoch
 ```
 
 ### Modified `IndexedAttestation`
+
+*Note*: `epoch` is not signed. It selects the signature domain, so that slashing
+evidence can be verified after its target is no longer current. A wrong `epoch`
+only makes the signature invalid.
 
 ```python
 class IndexedAttestation(ProgressiveContainer):
@@ -683,15 +687,11 @@ def is_well_formed_attestation_data(data: AttestationData) -> bool:
 ```python
 def is_valid_attestation_data(state: BeaconState, data: AttestationData) -> bool:
     """
-    Check if ``data`` names the target checkpoint of ``state``, or is a vote
-    below the current height whose finality pair is pending.
+    Check if ``data`` names the target checkpoint of ``state``.
     """
-    if data.target == state.target_checkpoint:
-        return True
-    return (
-        data.finality in [pending.checkpoint for pending in state.pending_finality]
-        and data.finality.height < data.target.height < state.target_checkpoint.height
-    )
+    # [Modified in EIP8453]
+    # Only votes for the current target are included
+    return data.target == state.target_checkpoint
 ```
 
 #### Modified `is_valid_indexed_attestation`
@@ -1051,9 +1051,20 @@ def get_previous_round(state: BeaconState) -> Round:
 
 #### New `get_attestation_committee`
 
-*Note*: The active validators are not shuffled. They are split evenly into
-`ATTESTATION_COMMITTEES_PER_ROUND` committees, in index order rotated by
-`epoch`, so each validator sits on exactly one.
+*Note*: The committee at `index` holds the validators whose index is `index`
+modulo `ATTESTATION_COMMITTEES_PER_ROUND`, in index order, that are eligible for
+activation by `epoch` and have not exited by `epoch`. A validator's committee
+index therefore never changes. The committees include validators that are not
+yet active, and validators that exit later; their signatures verify but do not
+count.
+
+*Note*: `process_registry_updates` sets `activation_eligibility_epoch` once, to
+the epoch after the one being processed, and an exit epoch is set at least
+`1 + MAX_SEED_LOOKAHEAD` epochs ahead. The committees of `epoch` are therefore
+fixed before the start of `epoch`: two chains that share a block of `epoch` or
+of a later epoch have the same committees of `epoch`. Every validator that is
+active in a state whose target is in `epoch` is eligible for activation by
+`epoch`, since its activation required its eligibility to be finalized.
 
 ```python
 def get_attestation_committee(
@@ -1062,13 +1073,29 @@ def get_attestation_committee(
     """
     Return the attestation committee at ``index`` for ``epoch``.
     """
-    indices = get_active_validator_indices(state, epoch)
-    start = (len(indices) * index) // ATTESTATION_COMMITTEES_PER_ROUND
-    end = (len(indices) * (index + 1)) // ATTESTATION_COMMITTEES_PER_ROUND
     committee = AttestationCommittee()
-    for position in range(start, end):
-        committee.append(indices[(position + epoch) % len(indices)])
+    for validator_index in range(index, len(state.validators), ATTESTATION_COMMITTEES_PER_ROUND):
+        validator = state.validators[validator_index]
+        if validator.activation_eligibility_epoch <= epoch < validator.exit_epoch:
+            committee.append(ValidatorIndex(validator_index))
     return committee
+```
+
+#### New `get_attestation_epoch`
+
+*Note*: Attestations are included only while their target is the current target
+of the chain, and every chain on which that holds contains the target block. So
+the committees of this epoch, and the signature domain, are the same on every
+chain that can include an attestation, and an aggregate never changes its
+encoding.
+
+```python
+def get_attestation_epoch(state: BeaconState) -> Epoch:
+    """
+    Return the epoch of the committees and the signature domain of the
+    attestations included in ``state``, the epoch of its target.
+    """
+    return compute_epoch_at_slot(state.target_slot)
 ```
 
 #### New `get_aggregate_participants`
@@ -1101,7 +1128,8 @@ def get_attesting_indices(state: BeaconState, attestation: Attestation) -> set[V
     Return the set of attesting indices corresponding to ``aggregation_bits``
     and ``committee_bits``.
     """
-    return get_aggregate_participants(state, attestation.epoch, attestation)
+    # [Modified in EIP8453]
+    return get_aggregate_participants(state, get_attestation_epoch(state), attestation)
 ```
 
 #### Modified `get_indexed_attestation`
@@ -1118,7 +1146,7 @@ def get_indexed_attestation(state: BeaconState, attestation: Attestation) -> Ind
         data=attestation.data,
         signature=attestation.signature,
         # [New in EIP8453]
-        epoch=attestation.epoch,
+        epoch=get_attestation_epoch(state),
     )
 ```
 
@@ -1690,7 +1718,8 @@ def process_legacy_attester_slashing(
 *Note*: The function `process_attestation` is rewritten for the finality gadget.
 Flags are credited only the first time a validator's progress or finality
 participation is recorded, and count toward the round in which the attestation
-is included.
+is included. Only attestations for the current target are included, and only
+signers that are active are counted.
 
 ```python
 def process_attestation(state: BeaconState, attestation: Attestation) -> None:
@@ -1698,26 +1727,26 @@ def process_attestation(state: BeaconState, attestation: Attestation) -> None:
 
     assert is_well_formed_attestation_data(data)
     assert is_valid_attestation_data(state, data)
-    assert attestation.epoch <= get_current_epoch(state)
-    assert attestation.epoch >= compute_epoch_at_slot(state.finalized_slot)
-    assert is_valid_aggregation_bits(state, attestation.epoch, attestation)
+    assert is_valid_aggregation_bits(state, get_attestation_epoch(state), attestation)
     assert is_valid_indexed_attestation(state, get_indexed_attestation(state, attestation))
 
     proposer_reward_numerator = 0
     for index in get_attesting_indices(state, attestation):
+        # Signers that are not active are verified but not counted
+        if not is_active_validator(state.validators[index], get_current_epoch(state)):
+            continue
         base_reward = get_round_base_reward(state, index)
         for pending in state.pending_finality:
             if pending.checkpoint == data.finality and not pending.participation[index]:
                 pending.participation[index] = Boolean(True)
                 add_participation_flag(state, index, FINALITY_FLAG_INDEX)
                 proposer_reward_numerator += base_reward * FINALITY_WEIGHT
-        if data.target == state.target_checkpoint:
-            if not state.progress_participation[index]:
-                state.progress_participation[index] = Boolean(True)
-                add_participation_flag(state, index, PROGRESS_FLAG_INDEX)
-                proposer_reward_numerator += base_reward * PROGRESS_WEIGHT
-            if not data.timeout:
-                state.target_participation[index] = Boolean(True)
+        if not state.progress_participation[index]:
+            state.progress_participation[index] = Boolean(True)
+            add_participation_flag(state, index, PROGRESS_FLAG_INDEX)
+            proposer_reward_numerator += base_reward * PROGRESS_WEIGHT
+        if not data.timeout:
+            state.target_participation[index] = Boolean(True)
 
     reward_divisor = (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT) * WEIGHT_DENOMINATOR // PROPOSER_WEIGHT
     proposer_reward = Gwei(proposer_reward_numerator // reward_divisor)

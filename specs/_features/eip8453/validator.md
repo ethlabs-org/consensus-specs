@@ -48,9 +48,9 @@ validator" to implement EIP-8453.
 
 EIP-8453 replaces the combined LMD-GHOST and Casper FFG attestation with
 separate head votes for the available chain (AC) and attestations for the
-finality gadget (FG). Each epoch, every active validator sits on one attestation
-committee and, in every round, casts its FG attestation in that committee's
-slot. In every slot, a head vote committee casts head votes.
+finality gadget (FG). Every validator sits on the attestation committee given by
+its index, and an active validator casts its FG attestation in that committee's
+slot in every round. In every slot, a head vote committee casts head votes.
 
 ## Prerequisites
 
@@ -107,20 +107,24 @@ def get_attestation_committee_assignment(
 ) -> CommitteeIndex | None:
     """
     Return the index of the validator's attestation committee in ``epoch``, if
-    any.
+    it is active in ``epoch``.
     """
-    for index in range(ATTESTATION_COMMITTEES_PER_ROUND):
-        committee_index = CommitteeIndex(index)
-        if validator_index in get_attestation_committee(state, epoch, committee_index):
-            return committee_index
-    return None
+    # [Modified in EIP8453]
+    # The committee index is fixed by the validator index
+    if not is_active_validator(state.validators[validator_index], epoch):
+        return None
+    return CommitteeIndex(validator_index % ATTESTATION_COMMITTEES_PER_ROUND)
 ```
 
-Every active validator sits on exactly one attestation committee per epoch. In
-each round, it attests in the slot
-`compute_attestation_committee_slot(round, committee_index)`, using the
-committee of that slot's epoch. Round numbering is defined by
-`compute_round_at_slot` and does not restart at the EIP-8453 fork.
+Every validator always has the same committee index, so its slot in each round
+and its subnet never change. An active validator attests in each round, in the
+slot `compute_attestation_committee_slot(round, committee_index)`. Round
+numbering is defined by `compute_round_at_slot` and does not restart at the
+EIP-8453 fork.
+
+*Note*: The committees of an epoch also contain validators that are eligible for
+activation but not yet active, and validators that have exited later. Such a
+validator has no attestation duty.
 
 ### Head vote committees
 
@@ -151,9 +155,10 @@ seats in that slot's committee.
 
 ### Lookahead
 
-Assignments are computed from the chain state using `get_attestation_committee`
-and `get_head_vote_committee`. A validator should recompute its assignment when
-the dependent chain state changes.
+Head vote assignments are computed from the chain state using
+`get_head_vote_committee`. A validator should recompute them when the dependent
+chain state changes. Attestation committee indices do not depend on the chain
+state; only whether the validator is active does.
 
 *TODO*: Specify assignment lookahead and the dependent root in the EIP-8453
 fork-choice and networking specifications.
@@ -208,11 +213,11 @@ Set `block.body.attestations` to aggregates selected from the FG attestation
 pool, up to `MAX_ATTESTATIONS_ELECTRA`. Each aggregate must satisfy the
 verification conditions in
 [`process_attestation`](./beacon-chain.md#modified-process_attestation),
-including its epoch, committee encoding and signature.
+including its committee encoding and signature. Only attestations for the
+current target of `state` are valid.
 
 A proposer should prefer aggregates that add target, progress or
-pending-finality participation. An attestation for a previous height can still
-contribute to a retained finality pair.
+pending-finality participation.
 
 ##### Attester slashings
 
@@ -418,9 +423,9 @@ following fields:
 - Set `attestation.committee_index` to the assigned committee index.
 - Set `attestation.attester_index = validator_index`.
 - Set `attestation.data = attestation_data`.
-- Set `attestation.epoch` to the epoch of the assigned slot.
 - Set `attestation.signature` to
-  `get_attestation_signature(state, attestation_data, attestation.epoch, privkey)`.
+  `get_attestation_signature(source_state, attestation_data, epoch, privkey)`,
+  where `epoch = get_attestation_epoch(source_state)`, the epoch of the target.
 
 ```python
 def get_attestation_signature(
@@ -436,8 +441,12 @@ def get_attestation_signature(
     return bls.Sign(privkey, signing_root)
 ```
 
-The signature covers `attestation.data`, but not `attestation.epoch` or
-`attestation.committee_index`.
+The signature covers `attestation.data`, but not `attestation.committee_index`.
+
+*Note*: `source_state.target_slot` is the slot of the target block, so every
+validator signing for the same target uses the same epoch. The target is current
+in the state of every chain that can include the attestation, and that state has
+the same target slot.
 
 #### Broadcast attestation
 
@@ -508,35 +517,36 @@ def get_aggregate_head_vote(state: BeaconState, messages: Sequence[HeadVoteMessa
 ##### FG attestations
 
 Construct `aggregate_attestation` using `get_aggregate_attestation` with
-individual attestations for the same data and epoch. Attestations cast in
-different rounds of the same epoch can be aggregated together.
+individual attestations for the same data, where `state` is a state whose target
+is the target of that data, such as the aggregator's source state. Attestations
+cast in different rounds or epochs can be aggregated together.
 
 ```python
 def get_aggregate_attestation(
     state: BeaconState, attestations: Sequence[SingleAttestation]
 ) -> Attestation:
     """
-    Aggregate attestations with identical data and epoch, and distinct signers.
+    Aggregate attestations with identical data and distinct signers.
     """
     assert len(attestations) > 0
     data = attestations[0].data
-    epoch = attestations[0].epoch
-    assert all(a.data == data and a.epoch == epoch for a in attestations)
+    assert all(a.data == data for a in attestations)
     participants = {a.attester_index for a in attestations}
     assert len(participants) == len(attestations)
 
+    # [Modified in EIP8453]
+    # Each signer's committee is fixed by its index
     committee_bits = AttestationCommitteeBits()
-    for attestation in attestations:
-        assert attestation.committee_index < ATTESTATION_COMMITTEES_PER_ROUND
-        committee_bits[attestation.committee_index] = Boolean(True)
+    for validator_index in participants:
+        committee_bits[validator_index % ATTESTATION_COMMITTEES_PER_ROUND] = Boolean(True)
 
+    epoch = get_attestation_epoch(state)
     aggregation_bits = get_attestation_aggregation_bits(state, epoch, committee_bits, participants)
     return Attestation(
         aggregation_bits=aggregation_bits,
         data=data,
         signature=bls.Aggregate([a.signature for a in attestations]),
         committee_bits=committee_bits,
-        epoch=epoch,
     )
 ```
 
@@ -578,10 +588,8 @@ def get_attestation_aggregation_bits(
 The validator broadcasts the aggregate for block inclusion.
 
 *TODO*: Specify aggregate gossip messages, selection-proof wrappers and
-broadcast deadlines. Gossip deduplication must use the data and signers, since
-the epoch is not signed.
+broadcast deadlines.
 
-*Note*: An FG aggregate's epoch must be between
-`compute_epoch_at_slot(state.finalized_slot)` and `get_current_epoch(state)`,
-inclusive, when included in a block. Its data must also remain valid against the
-inclusion state.
+*Note*: A block can include an FG aggregate only while its target is the current
+target of the inclusion state. Its encoding stays valid for that whole time,
+since the committees depend only on the epoch of the target.
