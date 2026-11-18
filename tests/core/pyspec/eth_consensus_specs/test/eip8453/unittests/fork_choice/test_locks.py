@@ -1,4 +1,4 @@
-"""Lock rules on a small fork, using the generated spec and real payload-status nodes."""
+"""Locks and confirmed tips on a small fork with real payload-status nodes."""
 
 from dataclasses import replace
 from importlib import import_module
@@ -363,6 +363,46 @@ def test_equivocators_do_not_supply_fast_lock_support(spec, tree):
     # The clean votes exceed half of participation, but are below half of the committee.
     assert store.latest_confirmed == nodes["A"]
     assert not store.locks
+
+
+@pytest.mark.parametrize(
+    ("confirmed_name", "head_name", "expected_name"),
+    [("A1", "A", "A"), ("A", "A1", "A"), ("A1", "B1", "P")],
+)
+def test_confirmed_tip_common_ancestor(spec, tree, confirmed_name, head_name, expected_name):
+    store, nodes = tree
+    store.latest_confirmed = nodes[confirmed_name]
+    vote_half(spec, store, nodes[head_name], slot=11)
+    assert spec.get_head(store) == nodes[head_name]
+    assert spec.get_confirmed_node(store) == nodes[expected_name]
+    assert store.latest_confirmed == nodes[confirmed_name]
+
+
+@pytest.mark.parametrize(
+    ("confirmed_status", "head_status"),
+    [("FULL", "EMPTY"), ("EMPTY", "FULL"), ("PENDING", "FULL")],
+)
+def test_confirmed_tip_payload_status(spec, tree, confirmed_status, head_status):
+    store, nodes = tree
+    store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
+    store.payload_receipt_times[nodes["A"].root] = spec.Uint64(0)
+    store.latest_confirmed = replace(
+        nodes["A"], payload_status=getattr(spec, f"PAYLOAD_STATUS_{confirmed_status}")
+    )
+    head = replace(nodes["A"], payload_status=getattr(spec, f"PAYLOAD_STATUS_{head_status}"))
+    vote_half(spec, store, head, slot=11)
+    assert spec.get_head(store) == head
+    assert spec.get_confirmed_node(store) == replace(
+        nodes["A"], payload_status=spec.PAYLOAD_STATUS_PENDING
+    )
+
+
+def test_confirmed_tip_outside_frame(spec, tree):
+    store, nodes = tree
+    store.latest_confirmed = replace(nodes["A"], root=spec.Root(b"\xff" * 32))
+    vote_half(spec, store, nodes["B1"], slot=11)
+    assert spec.get_head(store) == nodes["B1"]
+    assert spec.get_confirmed_node(store) == spec.get_fg_frame(store).finalized_node
 
 
 def test_slow_lock_does_not_require_fast_threshold(spec, tree):

@@ -1853,27 +1853,27 @@ def get_confirmed_execution_block_hash(store: Store) -> Hash32:
 
 ### New `get_confirmed_node`
 
-*Note*: Returns the latest confirmed node, falling back to the finalized node if
-it is outside the subtree rooted at finalized block or conflicts with the
-current head.
+*Note*: Returns the deepest common ancestor of the current head and the latest
+confirmed node, using the finalized node when the latter is outside the FG
+frame. Ancestry includes payload status, so the result can be pending.
 
 ```python
 def get_confirmed_node(store: Store) -> ForkChoiceNode:
     fg_frame = get_fg_frame(store)
-
-    # Fallback to finality if the latest confirmed is out of the FG frame
-    if (
-        store.latest_confirmed not in fg_frame.tree
-        or store.latest_confirmed == fg_frame.finalized_node
-    ):
-        return fg_frame.finalized_node
-
-    # Fall back to finality if the latest confirmed node conflicts with the current head
+    confirmed = (
+        store.latest_confirmed
+        if store.latest_confirmed in fg_frame.tree
+        else fg_frame.finalized_node
+    )
     head = get_head(store)
-    if not is_compatible(store, head, store.latest_confirmed):
-        return fg_frame.finalized_node
-
-    return store.latest_confirmed
+    return get_deepest_node(
+        store,
+        {
+            node
+            for node in fg_frame.tree
+            if is_ancestor(store, confirmed, node) and is_ancestor(store, head, node)
+        },
+    )
 ```
 
 ### Modified `get_head`
