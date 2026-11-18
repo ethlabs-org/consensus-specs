@@ -405,6 +405,51 @@ def test_confirmed_tip_outside_frame(spec, tree):
     assert spec.get_confirmed_node(store) == spec.get_fg_frame(store).finalized_node
 
 
+@pytest.mark.parametrize("receipt_offset", [-1, 0, 1])
+@pytest.mark.parametrize("with_payload", [False, True])
+def test_ac_vote_head_viable_tree_fallback(spec, tree, receipt_offset, with_payload):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11) + spec.get_head_vote_due_ms()
+    freeze = at_slot(spec, 10) + spec.get_view_freeze_ms()
+    store.max_height = spec.Height(2)
+    # Only the two leaves pass the height floor.
+    for name in ["A1", "B1"]:
+        store.block_states[nodes[name].root].target_checkpoint.height = spec.Height(2)
+    store.block_receipt_times[nodes["A1"].root] = freeze + receipt_offset
+    store.block_receipt_times[nodes["B1"].root] = freeze
+    if with_payload:
+        for name in ["A1", "B1"]:
+            store.payloads[nodes[name].root] = spec.ExecutionPayloadEnvelope()
+            store.payload_receipt_times[nodes[name].root] = spec.Uint64(0)
+
+    frame = spec.get_fg_frame(store)
+    restricted = spec.get_voter_subtree(store, frame.tree, spec.Slot(11))
+    # The restricted tree is nonempty even when none of its nodes is viable.
+    assert restricted
+    assert bool(spec.get_viable_subtree(store, frame, restricted)) == (receipt_offset < 0)
+    expected = nodes["A1"] if receipt_offset < 0 else nodes["B1"]
+    if with_payload:
+        expected = replace(expected, payload_status=spec.PAYLOAD_STATUS_FULL)
+    assert spec.get_ac_vote_head(store) == expected
+
+
+def test_ac_vote_head_keeps_payload_restriction(spec, tree):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11) + spec.get_head_vote_due_ms()
+    freeze = at_slot(spec, 10) + spec.get_view_freeze_ms()
+    store.max_height = spec.Height(2)
+    store.block_states[nodes["A1"].root].target_checkpoint.height = spec.Height(2)
+    store.payloads[nodes["A1"].root] = spec.ExecutionPayloadEnvelope()
+    store.payload_receipt_times[nodes["A1"].root] = freeze
+    full = replace(nodes["A1"], payload_status=spec.PAYLOAD_STATUS_FULL)
+    frame = spec.get_fg_frame(store)
+    restricted = spec.get_voter_subtree(store, frame.tree, spec.Slot(11))
+    assert full in frame.viable_heads
+    assert full not in restricted
+    assert nodes["A1"] in spec.get_viable_subtree(store, frame, restricted)
+    assert spec.get_ac_vote_head(store) == nodes["A1"]
+
+
 def test_slow_lock_does_not_require_fast_threshold(spec, tree):
     store, nodes = tree
     store.saved_confirmations = dict.fromkeys(range(7, 10), nodes["A"])

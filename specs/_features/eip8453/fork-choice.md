@@ -1742,7 +1742,8 @@ def get_ac_proposal(
 
 *Note*: Selects the head for an AC vote at the head vote deadline. Merges the
 frozen local P2P view with views from current slot proposals, then walks the
-voter's viable subtree.
+voter's viable subtree, falling back to the full FG tree if that subtree is
+empty.
 
 ```python
 def get_ac_vote_head(store: Store) -> ForkChoiceNode:
@@ -1773,6 +1774,8 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode:
 
     # Run over voter viable subtree
     voter_subtree = get_voter_subtree(store, fg_frame.tree, current_slot)
+    if len(get_viable_subtree(store, fg_frame, voter_subtree)) == 0:
+        voter_subtree = fg_frame.tree
     head = get_head_in_tree(
         store=store,
         fg_frame=fg_frame,
