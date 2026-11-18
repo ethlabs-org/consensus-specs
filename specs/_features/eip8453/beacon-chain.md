@@ -520,8 +520,8 @@ class SingleAttestation(Container):
 
 ### Modified `Attestation`
 
-*Note*: An attestation carries no epoch. Its committees and signature domain are
-those of the epoch of the target slot of the state that includes it (see
+*Note*: The committees and signature domain of an attestation are those of the
+epoch of the target slot of the state that includes it (see
 `get_attestation_epoch`).
 
 ```python
@@ -537,9 +537,9 @@ class Attestation(ProgressiveContainer):
 
 ### Modified `IndexedAttestation`
 
-*Note*: `epoch` is not signed. It selects the signature domain, so that slashing
-evidence can be verified after its target is no longer current. A wrong `epoch`
-only makes the signature invalid.
+*Note*: `epoch` selects the signature domain, so that slashing evidence can be
+verified in any later state. It is outside the signed data, and a wrong `epoch`
+makes the signature invalid.
 
 ```python
 class IndexedAttestation(ProgressiveContainer):
@@ -1054,9 +1054,9 @@ def get_previous_round(state: BeaconState) -> Round:
 *Note*: The committee at `index` holds the validators whose index is `index`
 modulo `ATTESTATION_COMMITTEES_PER_ROUND`, in index order, that are eligible for
 activation by `epoch` and have not exited by `epoch`. A validator's committee
-index therefore never changes. The committees include validators that are not
-yet active, and validators that exit later; their signatures verify but do not
-count.
+index is fixed by its validator index. The committees include validators that
+are not yet active, and validators that exit later; their signatures verify but
+do not count.
 
 *Note*: `process_registry_updates` sets `activation_eligibility_epoch` once, to
 the epoch after the one being processed, and an exit epoch is set at least
@@ -1086,8 +1086,8 @@ def get_attestation_committee(
 *Note*: Attestations are included only while their target is the current target
 of the chain, and every chain on which that holds contains the target block. So
 the committees of this epoch, and the signature domain, are the same on every
-chain that can include an attestation, and an aggregate never changes its
-encoding.
+chain that can include an attestation, and an aggregate has one encoding on all
+of them.
 
 ```python
 def get_attestation_epoch(state: BeaconState) -> Epoch:

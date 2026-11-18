@@ -116,15 +116,15 @@ def get_attestation_committee_assignment(
     return CommitteeIndex(validator_index % ATTESTATION_COMMITTEES_PER_ROUND)
 ```
 
-Every validator always has the same committee index, so its slot in each round
-and its subnet never change. An active validator attests in each round, in the
-slot `compute_attestation_committee_slot(round, committee_index)`. Round
+A validator's committee index is fixed by its validator index, and so are its
+slot in each round and its subnet. An active validator attests in each round, in
+the slot `compute_attestation_committee_slot(round, committee_index)`. Round
 numbering is defined by `compute_round_at_slot` and does not restart at the
 EIP-8453 fork.
 
 *Note*: The committees of an epoch also contain validators that are eligible for
-activation but not yet active, and validators that have exited later. Such a
-validator has no attestation duty.
+activation but not yet active, and validators that exit after that epoch. A
+validator that is not active has no attestation duty.
 
 ### Head vote committees
 
@@ -157,8 +157,8 @@ seats in that slot's committee.
 
 Head vote assignments are computed from the chain state using
 `get_head_vote_committee`. A validator should recompute them when the dependent
-chain state changes. Attestation committee indices do not depend on the chain
-state; only whether the validator is active does.
+chain state changes. A validator's attestation committee index is fixed by its
+validator index, and the chain state determines whether it is active.
 
 *TODO*: Specify assignment lookahead and the dependent root in the EIP-8453
 fork-choice and networking specifications.
