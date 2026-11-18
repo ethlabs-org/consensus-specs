@@ -116,11 +116,11 @@ def get_attestation_committee_assignment(
     return CommitteeIndex(validator_index % ATTESTATION_COMMITTEES_PER_ROUND)
 ```
 
-A validator's committee index is fixed by its validator index, and so are its
-slot in each round and its subnet. An active validator attests in each round, in
-the slot `compute_attestation_committee_slot(round, committee_index)`. Round
-numbering is defined by `compute_round_at_slot` and does not restart at the
-EIP-8453 fork.
+A validator's committee index is fixed by its validator index, and so is its
+subnet. An active validator attests in each round, in the slot
+`compute_attestation_committee_slot(round, committee_index)`, which moves by one
+slot in every round. Round numbering is defined by `compute_round_at_slot` and
+does not restart at the EIP-8453 fork.
 
 *Note*: The committees of an epoch also contain validators that are eligible for
 activation but not yet active, and validators that exit after that epoch. A

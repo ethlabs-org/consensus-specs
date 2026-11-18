@@ -151,11 +151,12 @@ to the FG what an epoch is to Casper FFG: each active validator attests once,
 and the FG settles rewards and inactivity at its end, in `process_round`. Each
 validator sits on the attestation committee given by its index modulo
 `ATTESTATION_COMMITTEES_PER_ROUND`, and committees are spread evenly over the
-slots of a round. In every round, an active validator casts its FG attestation
-in its committee's slot. A block includes only attestations for the chain's
-current target. Their bits are laid out in the committees of the target's epoch,
-so an aggregate keeps one encoding for as long as it can be included. Aggregates
-combine the attestations of several committees.
+slots of a round, moving to the next slot in every round. In every round, an
+active validator casts its FG attestation in its committee's slot. A block
+includes only attestations for the chain's current target. Their bits are laid
+out in the committees of the target's epoch, so an aggregate keeps one encoding
+for as long as it can be included. Aggregates combine the attestations of
+several committees.
 
 Validators are rewarded per round, as in Altair, with two participation flags.
 The progress flag is earned by a target vote or a timeout counted at the current
@@ -948,8 +949,11 @@ def compute_start_slot_at_round(round: Round) -> Slot:
 
 #### New `compute_attestation_committee_slot`
 
-*Note*: The committees of a round are assigned to its slots in order, with
-`ATTESTATION_COMMITTEES_PER_ROUND // SLOTS_PER_ROUND` committees per slot.
+*Note*: The committees are split in index order into blocks of
+`ATTESTATION_COMMITTEES_PER_ROUND // SLOTS_PER_ROUND` committees, one block per
+slot of a round. In every round each block votes one slot later than in the
+previous round, wrapping around, so every committee votes in each slot of a
+round once every `SLOTS_PER_ROUND` rounds.
 
 ```python
 def compute_attestation_committee_slot(round: Round, index: CommitteeIndex) -> Slot:
@@ -957,7 +961,9 @@ def compute_attestation_committee_slot(round: Round, index: CommitteeIndex) -> S
     Return the slot of ``round`` assigned to the committee at ``index``.
     """
     committees_per_slot = ATTESTATION_COMMITTEES_PER_ROUND // Uint64(SLOTS_PER_ROUND)
-    return compute_start_slot_at_round(round) + Slot(index // committees_per_slot)
+    # The block of committees moves by one slot in every round
+    offset = (Uint64(index) // committees_per_slot + Uint64(round)) % Uint64(SLOTS_PER_ROUND)
+    return compute_start_slot_at_round(round) + Slot(offset)
 ```
 
 #### New `compute_uniform_selection`
