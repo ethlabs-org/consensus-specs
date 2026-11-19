@@ -279,12 +279,20 @@ received at the start of their slot. The AC starts with no locks, confirmations
 or head votes.
 
 ```python
-def upgrade_store_to_eip8453(pre: heze.Store) -> Store:
+def upgrade_store_to_eip8453(pre: heze.Store, confirmed_root: Root) -> Store:
     """
     Return the EIP-8453 fork choice store converted from the Heze store ``pre``
-    at the fork.
+    at the fork, where ``confirmed_root`` is the Heze fast-confirmed block
+    (``FastConfirmationStore.confirmed_root``).
     """
     finalized_checkpoint = HeightCheckpoint(height=Height(0), root=pre.finalized_checkpoint.root)
+    # The Heze fast-confirmed block, with the payload status the Heze head
+    # builds on, starts the available chain as a slow lock of the last slot
+    # before the fork
+    confirmed = heze.get_ancestor(pre, heze.get_head(pre), pre.blocks[confirmed_root].slot)
+    assert confirmed.root == confirmed_root
+    anchor = ForkChoiceNode(root=confirmed.root, payload_status=confirmed.payload_status)
+    lock_slot = Slot(compute_start_slot_at_epoch(Epoch(EIP8453_FORK_EPOCH)) - 1)
     return Store(
         time_ms=pre.time_ms,
         genesis_time_ms=pre.genesis_time_ms,
@@ -307,11 +315,13 @@ def upgrade_store_to_eip8453(pre: heze.Store) -> Store:
             root: compute_time_at_slot_ms(pre.genesis_time_ms, pre.blocks[root].slot)
             for root in pre.payloads
         },
-        latest_confirmed=ForkChoiceNode(
-            root=finalized_checkpoint.root, payload_status=PAYLOAD_STATUS_PENDING
-        ),
+        latest_confirmed=anchor,
         saved_confirmations={},
-        locks=set(),
+        locks={
+            ACLock(
+                node=anchor, slot=lock_slot, fast=False, expiry_slot=lock_slot + SLOW_LOCK_WINDOW
+            )
+        },
         head_vote_messages={},
         head_vote_message_receipt_times={},
         head_vote_committees={},

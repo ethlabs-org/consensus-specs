@@ -65,7 +65,8 @@ def slot_time(spec, slot):
 def chain(spec, heze):
     """
     A real Heze store with blocks at slots 1 (imported) and 2 (held back), at
-    the fork slot, converted with ``upgrade_store_to_eip8453``. The block at
+    the fork slot, converted with ``upgrade_store_to_eip8453`` with the slot 1
+    block fast-confirmed. The block at
     slot 2 carries the PTC votes of the first four PTC seats for slot 1.
     """
     genesis_state = create_genesis_state(
@@ -93,7 +94,8 @@ def chain(spec, heze):
     heze.on_block(heze_store, signed_a)
     fork_slot = spec.compute_start_slot_at_epoch(spec.Epoch(FORK_EPOCH))
     heze.on_tick(heze_store, slot_time(heze, fork_slot))
-    store = spec.upgrade_store_to_eip8453(heze_store)
+    # The Heze fast confirmation rule is taken to have confirmed the head
+    store = spec.upgrade_store_to_eip8453(heze_store, signed_a.message.hash_tree_root())
     return store, heze_store, genesis_block, signed_a, signed_b, fork_slot
 
 
@@ -115,13 +117,6 @@ def post_fork_block(spec, store, parent_root, slot):
     return sign_block(spec, upgraded, block, proposer_index=block.proposer_index)
 
 
-def assert_viable_with_anchor_head(spec, store, root):
-    # The new block is in the FG frame; with no head votes yet, the AC head
-    # stays at the activation anchor
-    assert any(node.root == root for node in spec.get_fg_frame(store).tree)
-    assert spec.get_head(store).root == store.finalized_checkpoint.root
-
-
 def test_store_conversion_anchors_at_casper_finality(spec, chain):
     store, heze_store, genesis_block, signed_a, _, _ = chain
     anchor = spec.HeightCheckpoint(height=0, root=heze_store.finalized_checkpoint.root)
@@ -129,10 +124,11 @@ def test_store_conversion_anchors_at_casper_finality(spec, chain):
     assert store.finalized_checkpoint == anchor
     assert store.justified_checkpoint == anchor
     assert store.max_height == 1
-    # The head is not finalized
+    # The unfinalized fast-confirmed block is locked and stays the head
     a_root = signed_a.message.hash_tree_root()
     assert a_root != store.finalized_checkpoint.root
-    assert spec.get_head(store).root == anchor.root
+    assert spec.get_head(store).root == a_root
+    assert store.latest_confirmed.root == a_root
     upgraded = spec.get_block_state(store, a_root)
     assert upgraded.target_checkpoint == spec.HeightCheckpoint(height=1, root=a_root)
     assert upgraded.finalized_checkpoint.height == anchor.height
@@ -147,7 +143,7 @@ def test_first_post_fork_block_import(spec, chain):
     assert store.block_states[c_root].target_checkpoint == spec.HeightCheckpoint(
         height=1, root=a_root
     )
-    assert_viable_with_anchor_head(spec, store, c_root)
+    assert spec.get_head(store).root == c_root
 
 
 def test_restart_skips_heze_blocks(spec, chain):
@@ -177,7 +173,10 @@ def test_late_pre_fork_parent_is_imported_with_heze_rules(spec, heze, chain):
     assert store.block_states[c_root].target_checkpoint == spec.HeightCheckpoint(
         height=1, root=b_root
     )
-    assert_viable_with_anchor_head(spec, store, c_root)
+    # The late block has no votes and is not of the current slot, so the head
+    # stays at the locked Heze head, with the new block in the FG frame
+    assert any(node.root == c_root for node in spec.get_fg_frame(store).tree)
+    assert spec.get_head(store).root == signed_a.message.hash_tree_root()
 
 
 def test_block_schema_follows_the_fork_slot(spec, heze, chain):
@@ -239,3 +238,10 @@ def test_head_vote_with_heze_head(spec, chain):
     # The pulled-up Heze head state is read, and the genesis Casper finalized
     # root (zero in the state) stands for the genesis block
     spec.validate_head_vote_gossip(make_seen(spec), store, message, store.time_ms, {})
+
+
+def test_conversion_locks_the_fast_confirmed_block(spec, chain):
+    _, heze_store, genesis_block, _, _, _ = chain
+    genesis_root = genesis_block.hash_tree_root()
+    store = spec.upgrade_store_to_eip8453(heze_store, genesis_root)
+    assert spec.get_head(store).root == genesis_root

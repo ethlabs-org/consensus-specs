@@ -57,9 +57,12 @@ EIP-8453 fork choice handler, gossip validation or duty, a node converts its
 Heze fork choice store with
 [`upgrade_store_to_eip8453`](./fork-choice.md#new-upgrade_store_to_eip8453). Its
 justified and finalized checkpoints become the last finalized Casper FFG
-checkpoint at height 0, matching the upgraded state. It keeps its blocks and
-their post-states, and the post-states of blocks before the fork stay Heze
-states. EIP-8453 fork choice, gossip and duties read stored states through
+checkpoint at height 0, matching the upgraded state. The Heze fast-confirmed
+block (`confirmed_root` of the Heze fast confirmation store) becomes a slow lock
+of the last slot before the fork and the latest confirmed node, so the available
+chain continues from it. It keeps its blocks and their post-states, and the
+post-states of blocks before the fork stay Heze states. EIP-8453 fork choice,
+gossip and duties read stored states through
 [`get_block_state`](./fork-choice.md#new-get_block_state), which upgrades a Heze
 state with `get_upgraded_state`. A block, execution payload envelope or payload
 attestation for a block before the fork that arrives after the conversion is
