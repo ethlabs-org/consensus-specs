@@ -17,12 +17,15 @@ from eth_consensus_specs.heze import {preset_name} as heze
         return """
 _get_upgraded_state = get_upgraded_state
 _get_upgraded_heze_state = cache_this(
-    lambda state: state.hash_tree_root(), _get_upgraded_state, lru_size=64)
+    lambda state: (
+        state.hash_tree_root(), config.EIP8453_FORK_EPOCH, config.EIP8453_FORK_VERSION
+    ),
+    _get_upgraded_state, lru_size=64)
 
 
 def get_upgraded_state(state: heze.BeaconState | BeaconState) -> BeaconState:
     if isinstance(state, heze.BeaconState):
-        return _get_upgraded_heze_state(state)
+        return _get_upgraded_heze_state(state).copy()
     return state
 """
 

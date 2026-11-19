@@ -239,3 +239,18 @@ def test_head_vote_with_heze_head(spec, chain):
     # The pulled-up Heze head state is read, and the genesis Casper finalized
     # root (zero in the state) stands for the genesis block
     spec.validate_head_vote_gossip(make_seen(spec), store, message, store.time_ms, {})
+
+
+def test_upgraded_state_follows_config_and_is_not_shared(spec, monkeypatch, chain):
+    store, _, _, signed_a, _, _ = chain
+    heze_state = store.block_states[signed_a.message.hash_tree_root()]
+    upgraded = spec.get_upgraded_state(heze_state)
+    assert upgraded.fork.epoch == FORK_EPOCH
+    # A change to the returned state does not reach later calls
+    upgraded.slot += 1
+    assert spec.get_upgraded_state(heze_state).slot == spec.compute_start_slot_at_epoch(FORK_EPOCH)
+    # Another fork epoch gives another upgraded state
+    activate_pre_forks_at_genesis(spec, monkeypatch, EIP8453_FORK_EPOCH=spec.Epoch(2))
+    later = spec.get_upgraded_state(heze_state)
+    assert later.fork.epoch == 2
+    assert later.slot == spec.compute_start_slot_at_epoch(2)

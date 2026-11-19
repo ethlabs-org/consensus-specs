@@ -508,6 +508,9 @@ def get_upgraded_state(state: heze.BeaconState | BeaconState) -> BeaconState:
 
 ### New `get_block_state`
 
+*Note*: The returned state can be the stored state itself. Callers must not
+mutate it; a caller that changes it works on a copy.
+
 ```python
 def get_block_state(store: Store, root: Root) -> BeaconState:
     """

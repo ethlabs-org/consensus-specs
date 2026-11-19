@@ -63,7 +63,10 @@ states. EIP-8453 fork choice, gossip and duties read stored states through
 [`get_block_state`](./fork-choice.md#new-get_block_state), which upgrades a Heze
 state with `get_upgraded_state`. A block, execution payload envelope or payload
 attestation for a block before the fork that arrives after the conversion is
-processed with the Heze rules against the block's Heze state.
+processed with the Heze rules against the block's Heze state. Nodes stop serving
+and validating the Heze gossip topics at the conversion, since Heze gossip
+validation reads Heze fork choice checkpoints, and fetch a block from before the
+fork that is still missing by request/response.
 
 ### Upgrading the state
 
