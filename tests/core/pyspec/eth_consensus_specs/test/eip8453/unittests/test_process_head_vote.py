@@ -174,6 +174,20 @@ def test_genesis_vote_status_and_participation_require_canonical_root(
         assert [bool(bit) for bit in bits] == expected
 
 
+@pytest.mark.parametrize("expired", [False, True])
+@pytest.mark.parametrize("status", [0, 1, 2])
+def test_genesis_payload_status_at_history_expiry(spec, state, expired, status):
+    root = spec.get_block_root_at_slot(state, spec.GENESIS_SLOT)
+    state.slot = spec.Slot(spec.SLOTS_PER_HISTORICAL_ROOT + int(expired))
+    if expired:
+        state.block_roots[0] = spec.Root(b"\xff" * 32)
+    data = spec.HeadVoteData(slot=0, beacon_block_root=root, payload_status=status)
+    # Once genesis expires, this predicate has no canonical evidence for it.
+    # Inclusion and receipt enforce vote freshness separately.
+    expected = expired or status == spec.PAYLOAD_STATUS_PENDING
+    assert spec.is_head_vote_payload_status_valid(state, data) == expected
+
+
 @pytest.mark.parametrize(
     ("support", "valid"),
     [([False, True], True), ([True, True], False), ([False], False), ([False, True, False], False)],
