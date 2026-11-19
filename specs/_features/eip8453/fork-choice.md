@@ -14,6 +14,8 @@
   - [New `ACLock`](#new-aclock)
   - [Modified `Store`](#modified-store)
   - [Modified `get_forkchoice_store`](#modified-get_forkchoice_store)
+  - [New `is_ac_joined`](#new-is_ac_joined)
+  - [New `on_ac_restart`](#new-on_ac_restart)
   - [New `get_head_vote_due_ms`](#new-get_head_vote_due_ms)
   - [New `get_support_cutoff_ms`](#new-get_support_cutoff_ms)
   - [New `get_view_freeze_ms`](#new-get_view_freeze_ms)
@@ -181,15 +183,20 @@ class Store:
     head_vote_message_receipt_times: dict[Root, Uint64]
     head_vote_committees: dict[Slot, HeadVoteCommittee]
     prepared_head_vote: tuple[Slot, ForkChoiceNode] | None = None
+    restart_time_ms: Uint64 | None = None
 ```
 
 ### Modified `get_forkchoice_store`
 
 *Note*: The caller trusts the anchor block as justified and finalized at its
-post-state’s target height.
+post-state’s target height. A node observing from genesis may omit `time_ms`. A
+node bootstrapping from a weak-subjectivity anchor supplies its current wall
+clock time and waits for the joining condition before performing AC duties.
 
 ```python
-def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -> Store:
+def get_forkchoice_store(
+    anchor_state: BeaconState, anchor_block: BeaconBlock, time_ms: Uint64 | None = None
+) -> Store:
     assert anchor_block.state_root == hash_tree_root(anchor_state)
     anchor_root = hash_tree_root(anchor_block)
     # [New in EIP8453]
@@ -201,7 +208,14 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
     justified_checkpoint = HeightCheckpoint(height=anchor_height, root=anchor_root)
     finalized_checkpoint = HeightCheckpoint(height=anchor_height, root=anchor_root)
     genesis_time_ms = seconds_to_milliseconds(anchor_state.genesis_time)
-    time_ms = compute_time_at_slot_ms(genesis_time_ms, anchor_state.slot)
+    anchor_time_ms = compute_time_at_slot_ms(genesis_time_ms, anchor_state.slot)
+    if time_ms is None:
+        assert anchor_state.slot == GENESIS_SLOT
+        time_ms = anchor_time_ms
+        restart_time_ms = None
+    else:
+        assert time_ms >= anchor_time_ms
+        restart_time_ms = time_ms
     return Store(
         time_ms=time_ms,
         genesis_time_ms=genesis_time_ms,
@@ -229,7 +243,53 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
         head_vote_messages={},
         head_vote_message_receipt_times={},
         head_vote_committees={},
+        restart_time_ms=restart_time_ms,
     )
+```
+
+### New `is_ac_joined`
+
+```python
+def is_ac_joined(store: Store) -> bool:
+    """
+    Return whether the node has observed continuously since the previous slot.
+    """
+    if store.restart_time_ms is None:
+        return True
+    slot = get_current_slot(store)
+    return slot > GENESIS_SLOT and store.restart_time_ms <= compute_time_at_slot_ms(
+        store.genesis_time_ms, slot - 1
+    )
+```
+
+### New `on_ac_restart`
+
+*Note*: The validated block/state/payload database, FG state, AC locks and
+`latest_confirmed` survive restart. Persistent validator signing records also
+survive, including records preventing duplicate head votes. Committee duties are
+rederived from retained states. The transient AC views are reconstructed from
+retained blocks in parent order; all reconstructed receipts use restart time,
+not their pre-restart times. Sibling order is deterministic by root. No
+proposing, vote preparation, confirmation or FG-source publication runs during
+replay or until the joining condition holds.
+
+```python
+def on_ac_restart(store: Store, time_ms: Uint64) -> None:
+    assert time_ms >= store.time_ms
+    store.time_ms = time_ms
+    store.restart_time_ms = time_ms
+    store.prepared_head_vote = None
+    store.saved_confirmations = {}
+    store.fast_confirmed_path = set()
+    store.head_vote_messages = {}
+    store.head_vote_message_receipt_times = {}
+    store.head_vote_committees = {}
+    store.block_receipt_times = {}
+    store.payload_receipt_times = dict.fromkeys(store.payloads, time_ms)
+    for root in sorted(store.blocks, key=lambda root: (store.blocks[root].slot, root)):
+        store.block_receipt_times[root] = time_ms
+        for vote in store.blocks[root].body.head_votes:
+            record_head_vote_committee(store, store.block_states[root], vote.data)
 ```
 
 ### New `get_head_vote_due_ms`
@@ -1432,6 +1492,8 @@ def record_head_vote_message(store: Store, state: BeaconState, message: HeadVote
 
 ```python
 def update_confirmation(store: Store, slot: Slot) -> None:
+    if not is_ac_joined(store):
+        return
     fg_frame = get_fg_frame(store)
     support_cutoff_ms = (
         compute_time_at_slot_ms(store.genesis_time_ms, slot) + get_support_cutoff_ms()
@@ -1557,6 +1619,9 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
     store.time_ms = time_ms
     time_into_slot_ms = (time_ms - store.genesis_time_ms) % SLOT_DURATION_MS
     slot = compute_slot_at_time_ms(store.genesis_time_ms, time_ms)
+
+    if not is_ac_joined(store):
+        return
 
     if slot > GENESIS_SLOT and time_into_slot_ms == get_head_vote_due_ms():
         get_ac_vote_head(store)
@@ -1705,7 +1770,9 @@ supporting message indices.
 ```python
 def get_ac_proposal(
     store: Store,
-) -> tuple[ForkChoiceNode, list[HeadVoteMessage], list[int]]:
+) -> tuple[ForkChoiceNode, list[HeadVoteMessage], list[int]] | None:
+    if not is_ac_joined(store):
+        return None
     assert get_time_into_slot_ms(store) == Uint64(0)
 
     current_slot = get_current_slot(store)
@@ -1746,7 +1813,9 @@ voter's viable subtree, falling back to the full FG tree if that subtree is
 empty.
 
 ```python
-def get_ac_vote_head(store: Store) -> ForkChoiceNode:
+def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
+    if not is_ac_joined(store):
+        return None
     assert get_time_into_slot_ms(store) == get_head_vote_due_ms()
 
     current_slot = get_current_slot(store)
@@ -1828,6 +1897,9 @@ def get_ac_frame(store: Store) -> tuple[ForkChoiceNode | None, ForkChoiceNode]:
         support_votes=support_votes,
         slot=current_slot,
     )
+
+    if not is_ac_joined(store):
+        return None, head
 
     # The deepest viable node from the fast confirmed path
     viable_subtree = get_viable_subtree(store, fg_frame, fg_frame.tree)

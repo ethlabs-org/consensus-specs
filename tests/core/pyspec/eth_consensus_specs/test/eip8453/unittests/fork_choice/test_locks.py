@@ -546,6 +546,37 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree):
     assert store.locks == {replace(original, node=nodes["P"])}
 
 
+@pytest.mark.parametrize("offset", [0, 1])
+def test_restart_waits_for_full_previous_slot(spec, tree, offset):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11)
+    original = lock(spec, nodes["A"], expiry=12)
+    store.locks = {original}
+    store.latest_confirmed = nodes["A"]
+    store.saved_confirmations[10] = nodes["B"]
+    store.prepared_head_vote = (spec.Slot(10), nodes["B"])
+    vote_half(spec, store, nodes["B"])
+    restart = at_slot(spec, 11) + offset
+    spec.on_ac_restart(store, restart)
+    assert store.locks == {original}
+    assert store.latest_confirmed == nodes["A"]
+    assert not store.saved_confirmations
+    assert not store.head_vote_messages
+    assert store.prepared_head_vote is None
+    assert set(store.block_receipt_times.values()) == {restart}
+    assert spec.get_ac_proposal(store) is None
+    assert spec.get_ac_vote_head(store) is None
+    spec.on_tick(store, at_slot(spec, 11) + spec.get_support_cutoff_ms())
+    assert spec.get_ac_frame(store)[0] is None
+    assert store.latest_confirmed == nodes["A"]
+    spec.on_tick(store, at_slot(spec, 12) + spec.get_head_vote_due_ms())
+    assert spec.is_ac_joined(store) == (offset == 0)
+    assert (store.prepared_head_vote is not None) == (offset == 0)
+    spec.on_tick(store, at_slot(spec, 13) + spec.get_head_vote_due_ms())
+    assert spec.is_ac_joined(store)
+    assert not store.locks
+
+
 def test_slow_lock_does_not_require_fast_threshold(spec, tree):
     store, nodes = tree
     store.saved_confirmations = dict.fromkeys(range(7, 10), nodes["A"])

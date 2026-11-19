@@ -239,7 +239,12 @@ slot, even if none of its validators belongs to the head vote committee. This
 prepares one cached head per slot and unlocks using the frozen local view merged
 with the current proposals. Only assigned validators sign and broadcast votes.
 Repeated requests in the same slot return the prepared head without unlocking
-again.
+again. A `None` result means no vote is permitted. Nodes must observe
+continuously from the start of the previous slot after startup or restart before
+proposing, preparing votes, confirming or publishing an FG source. Validator
+signing records survive restart, including the record of head votes already
+signed; a validator must never sign two different head votes for one slot. A
+missing `get_ac_proposal` result means the proposal duty is skipped.
 
 #### Head vote data
 
