@@ -812,6 +812,10 @@ def test_vote_readiness_waits_only_for_supported_heads(spec, tree, supported, re
         root=spec.Root(b"\x99" * 32), payload_status=spec.PAYLOAD_STATUS_EMPTY
     )
     propose_votes(spec, store, nodes, [(unknown, [0, 1], supported)])
+    # The proposal is by the proposer that the head chain expects
+    for state in store.block_states.values():
+        state.proposer_lookahead[11 % spec.SLOTS_PER_EPOCH] = 1
+    store.blocks[nodes["B1"].root].proposer_index = 1
     store.head_vote_committees[10] = spec.HeadVoteCommittee(
         data=list(range(spec.HEAD_VOTE_COMMITTEE_SIZE))
     )

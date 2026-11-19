@@ -89,6 +89,25 @@ def test_same_slot_vote_records_participation(spec, state, is_supported):
 
 
 @pytest.mark.parametrize(
+    ("status", "valid"),
+    [
+        ("PAYLOAD_STATUS_EMPTY", False),
+        ("PAYLOAD_STATUS_FULL", False),
+        ("PAYLOAD_STATUS_PENDING", True),
+    ],
+)
+def test_same_slot_vote_must_be_pending(spec, state, status, valid):
+    # Give slot 2 its own block so that its votes are for the block of their slot
+    state.block_roots[2 % spec.SLOTS_PER_HISTORICAL_ROOT] = spec.Root(b"\x22" * 32)
+    vote = signed_vote(spec, state, 2, getattr(spec, status))
+    if valid:
+        spec.process_head_vote(state, vote, is_supported=True)
+    else:
+        with pytest.raises(AssertionError):
+            spec.process_head_vote(state, vote, is_supported=True)
+
+
+@pytest.mark.parametrize(
     ("support", "valid"),
     [([False, True], True), ([True, True], False), ([False], False), ([False, True, False], False)],
 )
