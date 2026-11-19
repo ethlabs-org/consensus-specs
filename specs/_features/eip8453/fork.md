@@ -170,6 +170,10 @@ def upgrade_to_eip8453(pre: heze.BeaconState) -> BeaconState:
         head_vote_participation=HeadVoteParticipation(),
         # [New in EIP8453]
         head_vote_committee_window=HeadVoteCommitteeWindow(),
+        # [New in EIP8453]
+        previous_target_checkpoint=HeightCheckpoint.empty(),
+        # [New in EIP8453]
+        previous_target_slot=Slot(0),
     )
 
     # [New in EIP8453]

@@ -218,7 +218,8 @@ pool, up to `MAX_ATTESTATIONS_ELECTRA`. Each aggregate must satisfy the
 verification conditions in
 [`process_attestation`](./beacon-chain.md#modified-process_attestation),
 including its committee encoding and signature. Only attestations for the
-current target of `state` are valid.
+current or the previous target of `state` are valid. An attestation for the
+previous target adds only pending-finality participation.
 
 A proposer should prefer aggregates that add target, progress or
 pending-finality participation.
@@ -445,7 +446,8 @@ following fields:
 - Set `attestation.data = attestation_data`.
 - Set `attestation.signature` to
   `get_attestation_signature(source_state, attestation_data, epoch, privkey)`,
-  where `epoch = get_attestation_epoch(source_state)`, the epoch of the target.
+  where `epoch = get_attestation_epoch(source_state, attestation_data)`, the
+  epoch of the target.
 
 ```python
 def get_attestation_signature(
@@ -560,7 +562,7 @@ def get_aggregate_attestation(
     for validator_index in participants:
         committee_bits[validator_index % ATTESTATION_COMMITTEES_PER_ROUND] = Boolean(True)
 
-    epoch = get_attestation_epoch(state)
+    epoch = get_attestation_epoch(state, data)
     aggregation_bits = get_attestation_aggregation_bits(state, epoch, committee_bits, participants)
     return Attestation(
         aggregation_bits=aggregation_bits,
