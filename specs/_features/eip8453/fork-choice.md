@@ -118,7 +118,7 @@ This document specifies the fork choice store and handlers accompanying the
 
 | Name                  | Value        | Description                                              |
 | --------------------- | ------------ | -------------------------------------------------------- |
-| `SLOW_LOCK_WINDOW`    | `Slot(2**2)` | Slow-confirmation window and max lock duration, in slots |
+| `SLOW_LOCK_WINDOW`    | `Slot(2**5)` | Slow-confirmation window and max lock duration, in slots |
 | `FAST_LOCK_EXTENSION` | `Slot(2)`    | Slots added to the latest live fast expiry               |
 
 Both `SLOW_LOCK_WINDOW` and `FAST_LOCK_EXTENSION` must be at least two.

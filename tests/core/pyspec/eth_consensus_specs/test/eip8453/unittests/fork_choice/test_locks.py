@@ -102,14 +102,16 @@ def vote_half(spec, store, node, slot=10):
 def test_fast_expiry_grows_and_is_capped(spec, tree):
     store, nodes = tree
     expiries = []
-    for slot in range(10, 15):
+    for slot in range(10, 43):
         store.time_ms = at_slot(spec, slot + 1) + spec.get_support_cutoff_ms()
-        vote_half(spec, store, nodes["A"], slot=slot)
+        vote(spec, store, nodes["A"], 0, slot=slot)
+        half = spec.HEAD_VOTE_COMMITTEE_SIZE // 2
+        store.head_vote_committees[slot] = spec.HeadVoteCommittee(data=[0] * half + [1] * half)
         spec.update_confirmation(store, spec.Slot(slot))
         current = [item for item in store.locks if item.slot == slot and item.fast]
         assert len(current) == 1
         expiries.append(int(current[0].expiry_slot))
-    assert expiries == [12, 14, 16, 17, 18]
+    assert expiries == list(range(12, 73, 2)) + [73, 74]
 
 
 def test_fast_expiry_paper_example_and_gap(spec, tree, monkeypatch):
@@ -151,7 +153,8 @@ def test_fast_expiry_counts_lock_moved_to_finalized(spec, tree):
     assert spec.compute_fast_lock_expiry(store, frame, spec.Slot(10)) == 14
 
 
-def test_fast_and_slow_locks_with_same_node_and_expiry(spec, tree):
+def test_fast_and_slow_locks_with_same_node_and_expiry(spec, tree, monkeypatch):
+    monkeypatch.setattr(spec, "SLOW_LOCK_WINDOW", spec.Slot(4))
     store, nodes = tree
     store.saved_confirmations = dict.fromkeys(range(7, 10), nodes["A"])
     store.locks = {lock(spec, nodes["A"], expiry=12)}
@@ -165,7 +168,8 @@ def test_fast_and_slow_locks_with_same_node_and_expiry(spec, tree):
     assert store.latest_confirmed == nodes["A"]
 
 
-def test_fast_and_slow_locks_can_have_different_nodes(spec, tree):
+def test_fast_and_slow_locks_can_have_different_nodes(spec, tree, monkeypatch):
+    monkeypatch.setattr(spec, "SLOW_LOCK_WINDOW", spec.Slot(4))
     store, nodes = tree
     store.saved_confirmations = dict.fromkeys(range(7, 10), nodes["P"])
     vote_half(spec, store, nodes["A"])
@@ -176,7 +180,8 @@ def test_fast_and_slow_locks_can_have_different_nodes(spec, tree):
     }
 
 
-def test_veto_records_candidate_and_locks_shared_ancestor(spec, tree):
+def test_veto_records_candidate_and_locks_shared_ancestor(spec, tree, monkeypatch):
+    monkeypatch.setattr(spec, "SLOW_LOCK_WINDOW", spec.Slot(4))
     store, nodes = tree
     store.latest_confirmed = nodes["A"]
     existing = lock(spec, nodes["A"])
@@ -197,13 +202,17 @@ def test_veto_records_candidate_and_locks_shared_ancestor(spec, tree):
 @pytest.mark.parametrize("missing", ["absent", "removed"])
 def test_missing_candidate_breaks_slow_streak(spec, tree, missing):
     store, nodes = tree
-    store.saved_confirmations = dict.fromkeys(range(7, 10), nodes["A"])
-    if missing == "absent":
-        del store.saved_confirmations[8]
-    else:
-        store.saved_confirmations[8] = replace(nodes["A"], root=spec.Root(b"\xff" * 32))
+    store.saved_confirmations = dict.fromkeys(range(10, 41), nodes["A"])
     assert (
-        spec.compute_slow_lock(store, spec.get_fg_frame(store), spec.Slot(10), nodes["A"]) is None
+        spec.compute_slow_lock(store, spec.get_fg_frame(store), spec.Slot(41), nodes["A"])
+        == nodes["A"]
+    )
+    if missing == "absent":
+        del store.saved_confirmations[10]
+    else:
+        store.saved_confirmations[10] = replace(nodes["A"], root=spec.Root(b"\xff" * 32))
+    assert (
+        spec.compute_slow_lock(store, spec.get_fg_frame(store), spec.Slot(41), nodes["A"]) is None
     )
 
 
@@ -579,8 +588,9 @@ def test_restart_waits_for_full_previous_slot(spec, tree, offset):
 
 def test_slow_lock_does_not_require_fast_threshold(spec, tree):
     store, nodes = tree
-    store.saved_confirmations = dict.fromkeys(range(7, 10), nodes["A"])
-    vote(spec, store, nodes["A"], 0)
-    spec.update_confirmation(store, spec.Slot(10))
-    assert store.locks == {lock(spec, nodes["A"], slot=10, fast=False, expiry=14)}
+    store.saved_confirmations = dict.fromkeys(range(10, 41), nodes["A"])
+    store.time_ms = at_slot(spec, 42) + spec.get_support_cutoff_ms()
+    vote(spec, store, nodes["A"], 0, slot=41)
+    spec.update_confirmation(store, spec.Slot(41))
+    assert store.locks == {lock(spec, nodes["A"], slot=41, fast=False, expiry=73)}
     assert not store.fast_confirmed_path
