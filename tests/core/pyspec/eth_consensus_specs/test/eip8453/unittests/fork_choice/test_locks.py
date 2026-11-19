@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from importlib import import_module
+from types import SimpleNamespace
 
 import pytest
 
@@ -604,6 +605,59 @@ def test_fg_source_uses_viable_lock_ancestor(spec, tree):
     store.max_height = spec.Height(2)
     store.block_states[nodes["B1"].root].target_checkpoint.height = spec.Height(2)
     assert spec.get_ac_frame(store)[0] == nodes["P"]
+
+
+@pytest.mark.parametrize("vote_slot", [10, 11])
+def test_head_vote_admission_and_gossip_cap(spec, tree, monkeypatch, vote_slot):
+    store, nodes = tree
+    monkeypatch.setattr(spec, "config", spec.config._replace(EIP8453_FORK_EPOCH=0))
+    for state in store.block_states.values():
+        state.slot = spec.Slot(11)
+        state.finalized_checkpoint = store.finalized_checkpoint.copy()
+        state.validators.append(spec.Validator(pubkey=spec.bls.SkToPk(1)))
+    seen = SimpleNamespace(head_vote_validator_slots={})
+    state = store.block_states[nodes["F"].root]
+    messages = []
+    for name in ["A", "B", "P"]:
+        data = spec.HeadVoteData(
+            slot=vote_slot,
+            beacon_block_root=nodes[name].root,
+            payload_status=spec.PAYLOAD_STATUS_EMPTY,
+        )
+        domain = spec.get_domain(
+            state, spec.DOMAIN_HEAD_VOTE, spec.compute_epoch_at_slot(data.slot)
+        )
+        messages.append(
+            spec.HeadVoteMessage(
+                validator_index=0,
+                data=data,
+                signature=spec.bls.Sign(1, spec.compute_signing_root(data, domain)),
+            )
+        )
+    invalid = messages[0].copy()
+    invalid.signature = spec.BLSSignature()
+    with pytest.raises(spec.GossipReject):
+        spec.validate_head_vote_gossip(seen, store, invalid, store.time_ms, {})
+    with pytest.raises(AssertionError):
+        spec.on_head_vote_message(store, invalid)
+    assert not seen.head_vote_validator_slots
+    assert not store.head_vote_messages
+    for message in messages[:2]:
+        spec.validate_head_vote_gossip(seen, store, message, store.time_ms, {})
+        spec.on_head_vote_message(store, message)
+    receipt_times = dict(store.head_vote_message_receipt_times)
+    for message in [messages[0], messages[2]]:
+        with pytest.raises(spec.GossipIgnore):
+            spec.validate_head_vote_gossip(seen, store, message, store.time_ms, {})
+        spec.on_head_vote_message(store, message)
+    assert store.head_vote_messages[vote_slot] == messages[:2]
+    assert store.head_vote_message_receipt_times == receipt_times
+    spec.on_tick(store, at_slot(spec, vote_slot + 2))
+    assert not store.head_vote_messages
+    assert not store.head_vote_message_receipt_times
+    with pytest.raises(spec.GossipIgnore):
+        spec.validate_head_vote_gossip(seen, store, messages[0], store.time_ms, {})
+    assert not seen.head_vote_validator_slots
 
 
 def test_slow_lock_does_not_require_fast_threshold(spec, tree):

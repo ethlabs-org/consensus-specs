@@ -102,7 +102,6 @@ from eth_consensus_specs.heze import {preset_name} as heze
             "validate_bls_to_execution_change_gossip",
             "validate_execution_payload_bid_gossip",
             "validate_execution_payload_envelope_gossip",
-            "validate_head_vote_gossip",
             "validate_inclusion_list_gossip",
             "validate_on_attestation",
             "validate_payload_attestation_message_gossip",

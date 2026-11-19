@@ -1449,8 +1449,11 @@ def record_head_vote_message(store: Store, state: BeaconState, message: HeadVote
     """
     Store head vote message in the pool, updates its receipt time and its slot committee.
     """
-    # Add message to the pool
+    # Keep at most two distinct vote data values for each validator and slot.
     slot_pool = store.head_vote_messages.get(message.data.slot, [])
+    previous = [vote for vote in slot_pool if vote.validator_index == message.validator_index]
+    if any(vote.data == message.data for vote in previous) or len(previous) >= 2:
+        return
     slot_pool.append(message)
     store.head_vote_messages[message.data.slot] = slot_pool
 
@@ -1602,6 +1605,26 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
     store.time_ms = time_ms
     time_into_slot_ms = (time_ms - store.genesis_time_ms) % SLOT_DURATION_MS
     slot = compute_slot_at_time_ms(store.genesis_time_ms, time_ms)
+    previous_slot = saturating_sub(slot, 1)
+    store.head_vote_messages = {
+        s: votes for s, votes in store.head_vote_messages.items() if s >= previous_slot
+    }
+    retained_roots = {
+        hash_tree_root(vote) for votes in store.head_vote_messages.values() for vote in votes
+    }
+    store.head_vote_message_receipt_times = {
+        root: time
+        for root, time in store.head_vote_message_receipt_times.items()
+        if root in retained_roots
+    }
+    store.head_vote_committees = {
+        s: committee for s, committee in store.head_vote_committees.items() if s >= previous_slot
+    }
+    store.saved_confirmations = {
+        s: node
+        for s, node in store.saved_confirmations.items()
+        if s >= saturating_sub(slot, SLOW_LOCK_WINDOW)
+    }
 
     if not is_ac_joined(store):
         return
@@ -1727,12 +1750,15 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
     current_slot = get_current_slot(store)
     previous_slot = saturating_sub(current_slot, 1)
 
-    # Message must not have been seen
-    assert message not in store.head_vote_messages.get(message.data.slot, [])
-
-    # Vote must be from the previous or current slot.
-    # Delay consideration in the fork-choice until their slot is in the past.
-    assert message.data.slot in [previous_slot, current_slot]
+    if message.data.slot not in [previous_slot, current_slot]:
+        return
+    previous = [
+        vote
+        for vote in store.head_vote_messages.get(message.data.slot, [])
+        if vote.validator_index == message.validator_index
+    ]
+    if any(vote.data == message.data for vote in previous) or len(previous) >= 2:
+        return
 
     # Use pulled up head state
     state = get_pulled_up_state(store, get_head(store).root)
