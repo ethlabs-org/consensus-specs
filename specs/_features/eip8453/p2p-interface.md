@@ -500,7 +500,9 @@ together with aggregator selection in the honest validator guide.
 The `attestation_{subnet_id}` topics, where each committee index maps to some
 `subnet_id`, are used to propagate FG attestations as `SingleAttestation`. FG
 attestations carry neither a slot nor a block root. Each validator may propagate
-one attestation per round, in the slot of its attestation committee.
+one attestation per round, in the slot of its attestation committee. Only
+attestations for the current target of the head state are propagated, as only
+those can be included.
 
 ```python
 def validate_attestation_gossip(
@@ -537,24 +539,22 @@ def validate_attestation_gossip(
     if not is_well_formed_attestation_data(data):
         raise GossipReject("attestation data is not well formed")
 
-    # [IGNORE] The target block has been seen (via gossip or non-gossip sources)
-    # (MAY be queued until block is retrieved)
-    if data.target.root not in store.blocks:
-        raise GossipIgnore("target block has not been seen")
+    head = get_head(store)
+    state = store.block_states[head.root]
+    target = state.target_checkpoint.copy()
+    if target.root == Root():
+        # The head block is the target of the head state's height
+        target.root = head.root
 
-    # [REJECT] The target block passes validation
-    if data.target.root not in store.block_states:
-        raise GossipReject("target block failed validation")
-
-    state = store.block_states[get_head(store).root]
-
-    # [IGNORE] The finalized block is an ancestor of the target block
-    if not is_finalized_ancestor(store, state, data.target.root):
-        raise GossipIgnore("finalized block is not an ancestor of the target block")
+    # [IGNORE] The attestation is for the current target of the head state
+    # (MAY be queued until the target block is retrieved)
+    if data.target != target:
+        raise GossipIgnore("attestation is not for the current target")
 
     # [REJECT] The attester is a member of the committee
-    # (the committees and the signature domain are those of the target's epoch)
-    epoch = compute_epoch_at_slot(store.blocks[data.target.root].slot)
+    # (the head state descends from the target, so it has the committees and
+    # signature domain of the target's epoch)
+    epoch = get_attestation_epoch(state)
     committee = get_attestation_committee(state, epoch, committee_index)
     if attester_index not in committee:
         raise GossipReject("attester is not a member of the committee")

@@ -95,7 +95,6 @@ from eth_consensus_specs.heze import {preset_name} as heze
             "upgrade_indexed_attestation_to_gloas",
             "upgrade_to_heze",
             "validate_attester_slashing_gossip",
-            "validate_attestation_gossip",
             "validate_beacon_aggregate_and_proof_gossip",
             "validate_beacon_attestation_gossip",
             "validate_beacon_block_gossip",
