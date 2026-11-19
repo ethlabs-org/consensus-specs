@@ -36,11 +36,11 @@ def state(spec):
     return state
 
 
-def signed_vote(spec, state, slot):
+def signed_vote(spec, state, slot, payload_status=None):
     data = spec.HeadVoteData(
         slot=slot,
         beacon_block_root=spec.get_block_root_at_slot(state, spec.Slot(slot)),
-        payload_status=spec.PAYLOAD_STATUS_PENDING,
+        payload_status=spec.PAYLOAD_STATUS_EMPTY if payload_status is None else payload_status,
     )
     voters = sorted(set(spec.get_head_vote_committee(state, spec.Slot(slot))))[:2]
     messages = [
@@ -65,6 +65,27 @@ def test_support_requires_previous_slot_vote(spec, state, slot, is_supported, va
     else:
         with pytest.raises(AssertionError):
             spec.process_head_vote(state, vote, is_supported)
+
+
+@pytest.mark.parametrize("is_supported", [False, True])
+def test_same_slot_vote_records_participation(spec, state, is_supported):
+    # Give slot 2 its own block so that its votes are for the block of their slot
+    state.block_roots[2 % spec.SLOTS_PER_HISTORICAL_ROOT] = spec.Root(b"\x22" * 32)
+    earlier = signed_vote(spec, state, 1)
+    spec.process_head_vote(state, earlier, is_supported=False)
+    assert not any(any(bits) for bits in state.head_vote_participation)
+
+    vote = signed_vote(spec, state, 2, spec.PAYLOAD_STATUS_PENDING)
+    spec.process_head_vote(state, vote, is_supported)
+    committee = spec.get_head_vote_committee(state, spec.Slot(2))
+    expected = [index in vote.voter_indices for index in committee]
+    for index, bits in enumerate(state.head_vote_participation):
+        recorded = [bool(bit) for bit in bits]
+        if index == spec.SLOTS_PER_EPOCH + 2:
+            assert any(expected)
+            assert recorded == expected
+        else:
+            assert not any(recorded)
 
 
 @pytest.mark.parametrize(

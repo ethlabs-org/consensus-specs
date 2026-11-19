@@ -793,6 +793,20 @@ def test_responsive_vote_waits_for_support_payload(spec, tree, payload_available
         assert spec.get_ac_vote_head(store) == early
 
 
+@pytest.mark.parametrize(("supported", "ready"), [(False, True), (True, False)])
+def test_vote_readiness_waits_only_for_supported_heads(spec, tree, supported, ready):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11)
+    unknown = spec.ForkChoiceNode(
+        root=spec.Root(b"\x99" * 32), payload_status=spec.PAYLOAD_STATUS_EMPTY
+    )
+    propose_votes(spec, store, nodes, [(unknown, [0, 1], supported)])
+    store.head_vote_committees[10] = spec.HeadVoteCommittee(
+        data=list(range(spec.HEAD_VOTE_COMMITTEE_SIZE))
+    )
+    assert spec.is_ac_vote_ready(store) == ready
+
+
 def test_responsive_vote_deadline_and_duplicate_preparation(spec, tree):
     store, nodes = tree
     store.time_ms = at_slot(spec, 11)

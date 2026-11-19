@@ -195,16 +195,18 @@ in the previous and current epochs that add seats for the block of their slot,
 since these weigh builder payments.
 
 Set `block.body.head_vote_support` to one bit per included aggregate, in the
-same order. Set an aggregate's bit if the proposer counted its votes as support
-in its previous slot head-vote view. A counted vote must be of slot
-`block.slot - 1`, for a block in the accepted tree at proposal time whose slot
-is no later than the vote's slot. Otherwise, clear the bit.
+same order. Set an aggregate's bit if its votes are among the supporting votes
+of the view returned by
+[`get_ac_proposal`](./fork-choice.md#new-get_ac_proposal) at the start of the
+slot. A counted vote must be of slot `block.slot - 1`, for a block in the
+accepted tree at proposal time whose slot is no later than the vote's slot.
+Otherwise, clear the bit.
 
-*Note*: The proposer's view resolves support with an infinite resolution
-threshold, so support depends only on the vote data and the store, not on
-receipt times. The voters of an aggregate share its data, so the proposer counts
-all of their votes as support or none of them. A vote for an unknown block may
-be included with its support bit cleared.
+*Note*: The view of `get_ac_proposal` resolves support with an infinite
+resolution threshold, so support depends only on the vote data and the store,
+not on receipt times. The voters of an aggregate share its data, so the proposer
+counts all of their votes as support or none of them. A vote for an unknown
+block may be included with its support bit cleared.
 
 *TODO*: Specify aggregate selection when the proposal view exceeds
 `MAX_HEAD_VOTES`, preserving the requirements of view merge.
