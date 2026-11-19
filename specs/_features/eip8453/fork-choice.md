@@ -24,6 +24,9 @@
   - [New `get_deepest_node`](#new-get_deepest_node)
   - [New `is_compatible`](#new-is_compatible)
   - [New `get_subtree`](#new-get_subtree)
+  - [New `get_upgraded_state`](#new-get_upgraded_state)
+  - [New `get_block_state`](#new-get_block_state)
+  - [New `get_block_pre_state`](#new-get_block_pre_state)
   - [New `get_pulled_up_state`](#new-get_pulled_up_state)
   - [Finality gadget](#finality-gadget)
     - [New `FGFrame`](#new-fgframe)
@@ -98,6 +101,13 @@
 This document specifies the fork choice store and handlers accompanying the
 [EIP-8453 upgrade](./beacon-chain.md), building on
 [Heze](../../heze/fork-choice.md).
+
+At the fork, the store keeps the blocks and post-states it holds. The
+post-states of blocks before the fork stay Heze states, and blocks before the
+fork are imported with the Heze `on_block`. EIP-8453 fork choice reads every
+stored state through `get_block_state`, which upgrades a Heze state with
+`get_upgraded_state`. `on_block` applies the first block after the fork to the
+upgraded parent state.
 
 ## Constants
 
@@ -293,7 +303,7 @@ def on_ac_restart(store: Store, time_ms: Uint64) -> None:
     for root in sorted(store.blocks, key=lambda root: (store.blocks[root].slot, root)):
         store.block_receipt_times[root] = time_ms
         for vote in store.blocks[root].body.head_votes:
-            record_head_vote_committee(store, store.block_states[root], vote.data)
+            record_head_vote_committee(store, get_block_state(store, root), vote.data)
 ```
 
 ### New `get_head_vote_due_ms`
@@ -384,6 +394,52 @@ def get_subtree(store: Store, subtree_root: ForkChoiceNode) -> Sequence[ForkChoi
     return subtree
 ```
 
+### New `get_upgraded_state`
+
+*Note*: The upgrade replays the slots from the state's slot to the fork, up to
+an epoch near the fork. Implementations should cache the upgraded state of each
+stored block.
+
+```python
+def get_upgraded_state(state: heze.BeaconState | BeaconState) -> BeaconState:
+    """
+    Return ``state``, advanced to the EIP-8453 fork and upgraded if it is a Heze
+    state.
+    """
+    if not isinstance(state, heze.BeaconState):
+        return state
+    pre = state.copy()
+    fork_slot = compute_start_slot_at_epoch(Epoch(EIP8453_FORK_EPOCH))
+    if pre.slot < fork_slot:
+        heze.process_slots(pre, fork_slot)
+    return upgrade_to_eip8453(pre)
+```
+
+### New `get_block_state`
+
+```python
+def get_block_state(store: Store, root: Root) -> BeaconState:
+    """
+    Return the post-state of the block at ``root``, upgraded at the EIP-8453
+    fork.
+    """
+    return get_upgraded_state(store.block_states[root])
+```
+
+### New `get_block_pre_state`
+
+```python
+def get_block_pre_state(store: Store, block: BeaconBlock) -> BeaconState:
+    """
+    Return the post-state of the parent of ``block``, upgraded at the EIP-8453
+    fork and advanced to the slot of ``block``.
+    """
+    state = get_block_state(store, block.parent_root).copy()
+    if state.slot < block.slot:
+        process_slots(state, block.slot)
+    return state
+```
+
 ### New `get_pulled_up_state`
 
 ```python
@@ -391,7 +447,7 @@ def get_pulled_up_state(store: Store, block_root: Root) -> BeaconState:
     """
     Return the state of the block pulled up to the current epoch if needed.
     """
-    block_state = store.block_states[block_root]
+    block_state = get_block_state(store, block_root)
     if get_current_epoch(block_state) < get_current_store_epoch(store):
         pulled_up_state = block_state.copy()
         process_slots(pulled_up_state, compute_start_slot_at_epoch(get_current_store_epoch(store)))
@@ -489,7 +545,7 @@ def is_fg_contest(store: Store) -> bool:
     max_height_blocks = [
         root
         for root in store.blocks
-        if store.block_states[root].target_checkpoint.height == store.max_height
+        if get_block_state(store, root).target_checkpoint.height == store.max_height
         and is_ancestor_root(store, root, store.finalized_checkpoint.root)
     ]
     return any(
@@ -506,7 +562,7 @@ def is_fg_viable_block(store: Store, block_root: Root) -> bool:
     """
     Return ``True`` if block passes the height floor check.
     """
-    block_target = store.block_states[block_root].target_checkpoint
+    block_target = get_block_state(store, block_root).target_checkpoint
     if is_fg_contest(store):
         return block_target.height >= store.max_height
     else:
@@ -704,7 +760,7 @@ def get_view_from_blocks(
                 if (
                     data.slot == vote_slot
                     and data.slot in store.head_vote_committees
-                    and get_head_vote_committee(store.block_states[block_root], data.slot)
+                    and get_head_vote_committee(get_block_state(store, block_root), data.slot)
                     == store.head_vote_committees[data.slot]
                 ):
                     vote_messages.append(head_vote)
@@ -1746,8 +1802,9 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
     # Run finalized check over the parent to avoid circular dependency.
     assert is_ancestor_root(store, block.parent_root, store.finalized_checkpoint.root)
 
-    # Make a copy of the state to avoid mutability issues
-    state = store.block_states[block.parent_root].copy()
+    # [Modified in EIP8453]
+    # Make a copy of the parent's state, upgraded at the EIP-8453 fork
+    state = get_block_state(store, block.parent_root).copy()
 
     # Check the block is valid and compute the post-state
     state_transition(state, signed_block, validate_result=True)

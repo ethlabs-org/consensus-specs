@@ -91,6 +91,7 @@
   - [Validator registry](#validator-registry)
     - [Modified `add_validator_to_registry`](#modified-add_validator_to_registry)
 - [Beacon chain state transition function](#beacon-chain-state-transition-function)
+  - [Modified `state_transition`](#modified-state_transition)
   - [Modified `process_slots`](#modified-process_slots)
   - [Modified `process_slot`](#modified-process_slot)
   - [Round processing](#round-processing)
@@ -1366,6 +1367,31 @@ def add_validator_to_registry(
 ```
 
 ## Beacon chain state transition function
+
+### Modified `state_transition`
+
+*Note*: The upgraded state of the last block before the EIP-8453 fork is already
+at the fork slot, where the first block after the fork can be. Slots are
+processed only up to the block's slot.
+
+```python
+def state_transition(
+    state: BeaconState, signed_block: SignedBeaconBlock, validate_result: bool = True
+) -> None:
+    block = signed_block.message
+    # [Modified in EIP8453]
+    # Process slots (including those with no blocks) since block
+    if state.slot < block.slot:
+        process_slots(state, block.slot)
+    # Verify signature
+    if validate_result:
+        assert verify_block_signature(state, signed_block)
+    # Process block
+    process_block(state, block)
+    # Verify state root
+    if validate_result:
+        assert block.state_root == hash_tree_root(state)
+```
 
 ### Modified `process_slots`
 

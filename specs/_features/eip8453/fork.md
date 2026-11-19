@@ -10,6 +10,7 @@
   - [New `initialize_head_vote_committee_window`](#new-initialize_head_vote_committee_window)
 - [Fork to EIP-8453](#fork-to-eip-8453)
   - [Fork trigger](#fork-trigger)
+  - [Upgrading the fork choice store](#upgrading-the-fork-choice-store)
   - [Upgrading the state](#upgrading-the-state)
 
 <!-- mdformat-toc end -->
@@ -48,6 +49,14 @@ def initialize_head_vote_committee_window(state: BeaconState) -> HeadVoteCommitt
 ### Fork trigger
 
 The fork is triggered at epoch `EIP8453_FORK_EPOCH`.
+
+### Upgrading the fork choice store
+
+The fork choice store is not rebuilt at the fork. It keeps its blocks and their
+post-states, and the post-states of blocks before the fork stay Heze states.
+EIP-8453 fork choice, gossip and duties read stored states through
+[`get_block_state`](./fork-choice.md#new-get_block_state), which upgrades a Heze
+state with `get_upgraded_state`.
 
 ### Upgrading the state
 
