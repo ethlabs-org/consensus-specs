@@ -189,16 +189,19 @@ latest slot of its committee that has started, which fixes its round.
 ```python
 def get_latest_attestation_committee_slot(
     store: Store, committee_index: CommitteeIndex, current_time_ms: Uint64
-) -> Slot:
+) -> Slot | None:
     """
     Return the latest slot of the attestation committee at ``committee_index``
-    that has started, allowing for ``MAXIMUM_GOSSIP_CLOCK_DISPARITY``.
+    that has started, allowing for ``MAXIMUM_GOSSIP_CLOCK_DISPARITY``, or
+    ``None`` if no slot of the committee has started.
     """
     current_time_with_disparity_ms = current_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY
     current_slot = compute_slot_at_time_ms(store.genesis_time_ms, current_time_with_disparity_ms)
     round = compute_round_at_slot(current_slot)
     slot = compute_attestation_committee_slot(round, committee_index)
     if slot > current_slot:
+        if round == GENESIS_ROUND:
+            return None
         return compute_attestation_committee_slot(round - 1, committee_index)
     return slot
 ```
@@ -530,6 +533,10 @@ def validate_attestation_gossip(
 
     slot = get_latest_attestation_committee_slot(store, committee_index, current_time_ms)
 
+    # [IGNORE] A slot of the attestation committee has started
+    if slot is None:
+        raise GossipIgnore("no slot of the attestation committee has started")
+
     # [IGNORE] No other valid attestation seen for this round and validator
     attestation_round_key = (compute_round_at_slot(slot), attester_index)
     if attestation_round_key in seen.attestation_validator_rounds:
@@ -538,6 +545,15 @@ def validate_attestation_gossip(
     # [REJECT] The attestation data is well formed
     if not is_well_formed_attestation_data(data):
         raise GossipReject("attestation data is not well formed")
+
+    # [REJECT] The target block, if it has been validated, opened the target height
+    if data.target.root in store.block_states:
+        target_state = store.block_states[data.target.root]
+        if (
+            target_state.target_checkpoint.root != Root()
+            or target_state.target_checkpoint.height != data.target.height
+        ):
+            raise GossipReject("target block did not open the target height")
 
     head = get_head(store)
     state = store.block_states[head.root]

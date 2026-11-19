@@ -86,15 +86,25 @@ def sign(spec, state, data, attester=ATTESTER, committee_index=None):
     )
 
 
-def validate(spec, monkeypatch, store, attestation, head_root):
+def validate(spec, monkeypatch, store, attestation, head_root, seen=None, slot=None):
     head = spec.ForkChoiceNode(root=head_root, payload_status=spec.PAYLOAD_STATUS_EMPTY)
     monkeypatch.setattr(spec, "get_head", lambda _store: head)
-    seen = make_seen(spec)
+    if seen is None:
+        seen = make_seen(spec)
+    if slot is None:
+        # A slot after the first round, so every committee has a started slot
+        slot = 2 * spec.SLOTS_PER_ROUND
+    time_ms = spec.compute_time_at_slot_ms(spec.Uint64(0), spec.Slot(slot))
     subnet = spec.compute_subnet_for_attestation(attestation.committee_index)
-    # A time after the first round, so every committee has a started slot
-    time_ms = spec.compute_time_at_slot_ms(spec.Uint64(0), spec.Slot(2 * spec.SLOTS_PER_ROUND))
     spec.validate_attestation_gossip(seen, store, attestation, time_ms, subnet)
     return seen
+
+
+def add_target_state(spec, store, state, height):
+    # The post-state of a block that opened ``height``
+    target_state = state.copy()
+    target_state.target_checkpoint = spec.HeightCheckpoint(height=height, root=spec.Root())
+    store.block_states[state.target_checkpoint.root] = target_state
 
 
 def current_data(spec, state):
@@ -140,3 +150,56 @@ def test_wrong_committee_is_rejected(spec, state, monkeypatch):
     attestation = sign(spec, state, current_data(spec, state), committee_index=wrong)
     with pytest.raises(spec.GossipReject, match="not a member of the committee"):
         validate(spec, monkeypatch, store, attestation, head)
+
+
+def test_target_height_must_match_target_block(spec, state, monkeypatch):
+    head = spec.Root(b"\x01" * 32)
+    store = make_store(spec, head, state)
+    add_target_state(spec, store, state, state.target_checkpoint.height)
+    validate(spec, monkeypatch, store, sign(spec, state, current_data(spec, state)), head)
+    data = current_data(spec, state)
+    data.target.height += 1
+    with pytest.raises(spec.GossipReject, match="did not open the target height"):
+        validate(spec, monkeypatch, store, sign(spec, state, data), head)
+
+
+def test_target_block_that_opened_no_height_is_rejected(spec, state, monkeypatch):
+    head = spec.Root(b"\x01" * 32)
+    store = make_store(spec, head, state)
+    # The target block's own state has a filled-in target, so it opened no height
+    store.block_states[state.target_checkpoint.root] = state.copy()
+    with pytest.raises(spec.GossipReject, match="did not open the target height"):
+        validate(spec, monkeypatch, store, sign(spec, state, current_data(spec, state)), head)
+
+
+def test_first_round_before_committee_slot_is_ignored(spec, state, monkeypatch):
+    head = spec.Root(b"\x01" * 32)
+    store = make_store(spec, head, state)
+    attester = next(
+        index
+        for index in range(len(state.validators))
+        if spec.compute_attestation_committee_slot(
+            spec.GENESIS_ROUND, index % spec.ATTESTATION_COMMITTEES_PER_ROUND
+        )
+        > spec.GENESIS_SLOT
+    )
+    attestation = sign(spec, state, current_data(spec, state), attester=attester)
+    with pytest.raises(spec.GossipIgnore, match="no slot of the attestation committee"):
+        validate(spec, monkeypatch, store, attestation, head, slot=spec.GENESIS_SLOT)
+
+
+def test_stale_row_does_not_take_the_round(spec, state, monkeypatch):
+    state.target_checkpoint.height = spec.Height(5)
+    head = spec.Root(b"\x01" * 32)
+    store = make_store(spec, head, state)
+    stale = current_data(spec, state)
+    stale.target.height -= 1
+    stale.target.root = spec.Root(b"\x04" * 32)
+    seen = make_seen(spec)
+    with pytest.raises(spec.GossipIgnore, match="not for the current target"):
+        validate(spec, monkeypatch, store, sign(spec, state, stale), head, seen=seen)
+    assert len(seen.attestation_validator_rounds) == 0
+    validate(
+        spec, monkeypatch, store, sign(spec, state, current_data(spec, state)), head, seen=seen
+    )
+    assert len(seen.attestation_validator_rounds) == 1
