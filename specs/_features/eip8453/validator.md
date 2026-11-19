@@ -245,12 +245,13 @@ merged with current proposals. When a new prepared head becomes available,
 assigned validators immediately sign, process locally and broadcast their vote
 once. Unselected validators do not sign, self-admit or emit a vote. Repeated
 requests in the same slot return the prepared head without unlocking again. A
-`None` result means no vote is permitted. Nodes must observe continuously from
-the start of the previous slot after startup or restart before proposing,
-preparing votes, confirming or publishing an FG source. Validator signing
-records survive restart, including the record of head votes already signed; a
-validator must never sign two different head votes for one slot. A missing
-`get_ac_proposal` result means the proposal duty is skipped.
+`None` result means preparation is not ready yet, the node has not joined, or
+the deadline was missed. Nodes must observe continuously from the start of the
+previous slot after startup or restart before proposing, preparing votes,
+confirming or publishing an FG source. Validator signing records survive
+restart, including the record of head votes already signed; a validator must
+never sign two different head votes for one slot. A missing `get_ac_proposal`
+result means the proposal duty is skipped.
 
 #### Head vote data
 
@@ -333,11 +334,13 @@ def get_finality_vote(
     height, root = justified.height, justified.root
     if height <= finalized_height:
         return HeightCheckpoint.empty()
-    if record.targets.get(height) not in (None, root):
+    previous_target = record.targets.get(height)
+    if previous_target is not None and previous_target != root:
         return HeightCheckpoint.empty()
     if not record.timeouts.get(height, set()) <= {root}:
         return HeightCheckpoint.empty()
-    if record.finality_locks.get(height) not in (None, root):
+    lock = record.finality_locks.get(height)
+    if lock is not None and lock != root:
         return HeightCheckpoint.empty()
     return justified.copy()
 ```
@@ -364,9 +367,10 @@ def get_height_vote(
         return None
     if height in record.timeouts:
         return target.copy(), True
-    if record.targets.get(height) in (None, root):
-        return target.copy(), False
-    return target.copy(), True
+    previous_target = record.targets.get(height)
+    if previous_target is not None and previous_target != root:
+        return target.copy(), True
+    return target.copy(), False
 ```
 
 *Note*: The candidate finality pair constrains the height vote before it is

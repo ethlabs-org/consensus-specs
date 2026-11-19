@@ -458,7 +458,7 @@ def validate_head_vote_gossip(
     if store.blocks[block_root].slot > data.slot:
         raise GossipReject("block being voted for is from a later slot")
 
-    state = store.block_states[get_head(store).root]
+    state = get_pulled_up_state(store, get_head(store).root)
 
     # [IGNORE] The finalized block is an ancestor of the block being voted for
     if not is_finalized_ancestor(store, state, block_root):
