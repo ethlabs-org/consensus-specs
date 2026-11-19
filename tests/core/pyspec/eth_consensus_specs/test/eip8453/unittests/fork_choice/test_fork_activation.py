@@ -254,3 +254,13 @@ def test_upgraded_state_follows_config_and_is_not_shared(spec, monkeypatch, chai
     later = spec.get_upgraded_state(heze_state)
     assert later.fork.epoch == 2
     assert later.slot == spec.compute_start_slot_at_epoch(2)
+
+
+def test_upgraded_state_follows_heze_config(spec, heze, monkeypatch, chain):
+    store, _, _, signed_a, _, _ = chain
+    heze_state = store.block_states[signed_a.message.hash_tree_root()]
+    assert spec.get_upgraded_state(heze_state).validators[0].exit_epoch == spec.FAR_FUTURE_EPOCH
+    # With the ejection threshold at the full balance, the epoch transition the
+    # upgrade replays ejects every validator
+    activate_pre_forks_at_genesis(heze, monkeypatch, EJECTION_BALANCE=heze.MAX_EFFECTIVE_BALANCE)
+    assert spec.get_upgraded_state(heze_state).validators[0].exit_epoch != spec.FAR_FUTURE_EPOCH

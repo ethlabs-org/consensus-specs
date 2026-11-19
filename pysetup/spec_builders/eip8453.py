@@ -17,9 +17,7 @@ from eth_consensus_specs.heze import {preset_name} as heze
         return """
 _get_upgraded_state = get_upgraded_state
 _get_upgraded_heze_state = cache_this(
-    lambda state: (
-        state.hash_tree_root(), config.EIP8453_FORK_EPOCH, config.EIP8453_FORK_VERSION
-    ),
+    lambda state: (state.hash_tree_root(), repr(config), repr(heze.config)),
     _get_upgraded_state, lru_size=64)
 
 

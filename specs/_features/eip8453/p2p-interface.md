@@ -278,6 +278,18 @@ deprecated, and the `head_vote` and `attestation_{subnet_id}` topics are new:
 Legacy attester slashings are not propagated on gossip. A proposer includes the
 evidence it holds.
 
+*Note*: At the EIP-8453 fork, nodes stop serving and validating the Heze topics
+when they convert their fork choice store, at the start of the fork slot (see
+[Upgrading the fork choice store](./fork.md#upgrading-the-fork-choice-store)),
+in place of the inherited guidance to unsubscribe from pre-fork topics two
+epochs after the fork. Heze gossip validation reads Heze fork choice
+checkpoints, which the converted store does not hold. Blocks and execution
+payload envelopes from before the fork that are still missing, such as the
+envelope of the last block before the fork, are fetched by request/response,
+including `ExecutionPayloadEnvelopesByRoot`. After the conversion, messages on
+the Heze topics are IGNOREd, not REJECTed, and peers that still propagate
+messages there MUST NOT be scored negatively.
+
 #### Global topics
 
 ##### Modified `beacon_block`

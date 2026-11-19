@@ -65,8 +65,11 @@ state with `get_upgraded_state`. A block, execution payload envelope or payload
 attestation for a block before the fork that arrives after the conversion is
 processed with the Heze rules against the block's Heze state. Nodes stop serving
 and validating the Heze gossip topics at the conversion, since Heze gossip
-validation reads Heze fork choice checkpoints, and fetch a block from before the
-fork that is still missing by request/response.
+validation reads Heze fork choice checkpoints, and fetch blocks and execution
+payload envelopes from before the fork that are still missing by
+request/response, including `ExecutionPayloadEnvelopesByRoot`. Messages on the
+Heze topics after the conversion are IGNOREd, not REJECTed, and peers that still
+propagate them are not scored negatively.
 
 ### Upgrading the state
 
