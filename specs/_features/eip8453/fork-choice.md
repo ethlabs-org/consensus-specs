@@ -81,6 +81,7 @@
   - [New `on_head_vote_message`](#new-on_head_vote_message)
 - [Internal API](#internal-api)
   - [New `get_ac_proposal`](#new-get_ac_proposal)
+  - [New `is_ac_vote_ready`](#new-is_ac_vote_ready)
   - [New `get_ac_vote_head`](#new-get_ac_vote_head)
   - [New `get_ac_frame`](#new-get_ac_frame)
   - [New `get_confirmed_execution_block_hash`](#new-get_confirmed_execution_block_hash)
@@ -183,6 +184,7 @@ class Store:
     head_vote_committees: dict[Slot, HeadVoteCommittee]
     prepared_head_vote: tuple[Slot, ForkChoiceNode] | None = None
     restart_time_ms: Uint64 | None = None
+    pending_head_votes: list[HeadVoteMessage] = field(default_factory=list)
 ```
 
 ### Modified `get_forkchoice_store`
@@ -277,6 +279,7 @@ def on_ac_restart(store: Store, time_ms: Uint64) -> None:
     store.time_ms = time_ms
     store.restart_time_ms = time_ms
     store.prepared_head_vote = None
+    store.pending_head_votes = []
     store.saved_confirmations = {}
     store.head_vote_messages = {}
     store.head_vote_message_receipt_times = {}
@@ -1626,6 +1629,11 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
         if s >= saturating_sub(slot, SLOW_LOCK_WINDOW)
     }
 
+    pending = store.pending_head_votes
+    store.pending_head_votes = []
+    for message in pending:
+        on_head_vote_message(store, message)
+
     if not is_ac_joined(store):
         return
 
@@ -1696,6 +1704,7 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
 
     # Notify the store about the payload_attestations in the block
     notify_ptc_messages(store, state, block.body.payload_attestations)
+    get_ac_vote_head(store)
 ```
 
 ### Modified `on_execution_payload_envelope`
@@ -1739,6 +1748,7 @@ def on_execution_payload_envelope(
 
     # Add execution payload envelope to the store
     store.payloads[envelope.beacon_block_root] = envelope
+    get_ac_vote_head(store)
 ```
 
 ### New `on_head_vote_message`
@@ -1750,6 +1760,22 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
     current_slot = get_current_slot(store)
     previous_slot = saturating_sub(current_slot, 1)
 
+    if message.data.slot == current_slot + 1:
+        slot_start = compute_time_at_slot_ms(store.genesis_time_ms, message.data.slot)
+        if store.time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY < slot_start:
+            return
+        previous = [
+            vote
+            for vote in store.pending_head_votes
+            if vote.validator_index == message.validator_index
+            and vote.data.slot == message.data.slot
+        ]
+        if any(vote.data == message.data for vote in previous) or len(previous) >= 2:
+            return
+        state = get_pulled_up_state(store, get_head(store).root)
+        assert is_valid_head_vote_message(state, message)
+        store.pending_head_votes.append(message)
+        return
     if message.data.slot not in [previous_slot, current_slot]:
         return
     previous = [
@@ -1766,6 +1792,7 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
 
     # Record the message
     record_head_vote_message(store, state, message)
+    get_ac_vote_head(store)
 ```
 
 ## Internal API
@@ -1814,27 +1841,57 @@ def get_ac_proposal(
     return head, vote_messages, support_indices
 ```
 
+### New `is_ac_vote_ready`
+
+```python
+def is_ac_vote_ready(store: Store) -> bool:
+    """
+    Return whether a current proposal has all of its supporting heads available.
+    """
+    slot = get_current_slot(store)
+    if slot == GENESIS_SLOT:
+        return False
+    tree = set(get_fg_frame(store).tree)
+    for root, block in store.blocks.items():
+        proposal = ForkChoiceNode(root=root, payload_status=PAYLOAD_STATUS_PENDING)
+        if block.slot != slot or proposal not in tree:
+            continue
+        ready = True
+        for vote, support in zip(block.body.head_votes, block.body.head_vote_support, strict=True):
+            if vote.data.slot != slot - 1 or not any(support):
+                continue
+            node = ForkChoiceNode(
+                root=vote.data.beacon_block_root, payload_status=vote.data.payload_status
+            )
+            if node not in tree or store.blocks[node.root].slot > slot - 1:
+                ready = False
+                break
+        if ready:
+            return True
+    return False
+```
+
 ### New `get_ac_vote_head`
 
-*Note*: Selects the head for an AC vote at the head vote deadline. Merges the
-frozen local P2P view with views from current slot proposals, then walks the
-voter's viable subtree, falling back to the full FG tree if that subtree is
-empty.
+*Note*: Prepares the head at the first ready proposal up to the head-vote
+deadline, or at the deadline if no proposal is ready. Returns `None` before
+readiness or after a missed deadline. The prepared result remains stable for the
+slot. Merges the frozen local P2P view with views from current slot proposals,
+then walks the voter's viable subtree, falling back to the full FG tree if that
+subtree is empty.
 
 ```python
 def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
     if not is_ac_joined(store):
         return None
-    assert get_time_into_slot_ms(store) == get_head_vote_due_ms()
-
     current_slot = get_current_slot(store)
     if store.prepared_head_vote is not None and store.prepared_head_vote[0] == current_slot:
         return store.prepared_head_vote[1]
-    if current_slot == GENESIS_SLOT:
-        return ForkChoiceNode(
-            root=store.finalized_checkpoint.root,
-            payload_status=PAYLOAD_STATUS_EMPTY,
-        )
+    elapsed = get_time_into_slot_ms(store)
+    if current_slot == GENESIS_SLOT or elapsed > get_head_vote_due_ms():
+        return None
+    if elapsed < get_head_vote_due_ms() and not is_ac_vote_ready(store):
+        return None
 
     fg_frame = get_fg_frame(store)
     view_freeze_ms = (
@@ -1866,11 +1923,10 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
         slot=current_slot - 1,
     )
 
-    # Never return pending nodes for previous slots
-    if (
-        store.blocks[head.root].slot < current_slot
-        and head.payload_status == PAYLOAD_STATUS_PENDING
-    ):
+    # Current-slot votes name the block without deciding its payload.
+    if store.blocks[head.root].slot == current_slot:
+        head = ForkChoiceNode(root=head.root, payload_status=PAYLOAD_STATUS_PENDING)
+    elif head.payload_status == PAYLOAD_STATUS_PENDING:
         head = ForkChoiceNode(root=head.root, payload_status=PAYLOAD_STATUS_EMPTY)
     store.prepared_head_vote = (current_slot, head)
     return head

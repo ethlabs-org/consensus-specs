@@ -234,17 +234,21 @@ position in block processing.
 A validator on the head vote committee of `slot` creates, signs and broadcasts a
 `HeadVoteMessage` for that slot.
 
-Every node calls `get_ac_vote_head(store)` at `get_head_vote_due_ms()` into the
-slot, even if none of its validators belongs to the head vote committee. This
-prepares one cached head per slot and unlocks using the frozen local view merged
-with the current proposals. Only assigned validators sign and broadcast votes.
-Repeated requests in the same slot return the prepared head without unlocking
-again. A `None` result means no vote is permitted. Nodes must observe
-continuously from the start of the previous slot after startup or restart before
-proposing, preparing votes, confirming or publishing an FG source. Validator
-signing records survive restart, including the record of head votes already
-signed; a validator must never sign two different head votes for one slot. A
-missing `get_ac_proposal` result means the proposal duty is skipped.
+Every node attempts `get_ac_vote_head(store)` after block, payload and head-vote
+receipts and at `get_head_vote_due_ms()` into the slot, even if none of its
+validators belongs to the head vote committee. A ready current-slot proposal
+allows early preparation; otherwise preparation waits until the deadline.
+Preparation caches one head per slot and unlocks using the frozen local view
+merged with current proposals. When a new prepared head becomes available,
+assigned validators immediately sign, process locally and broadcast their vote
+once. Unselected validators do not sign, self-admit or emit a vote. Repeated
+requests in the same slot return the prepared head without unlocking again. A
+`None` result means no vote is permitted. Nodes must observe continuously from
+the start of the previous slot after startup or restart before proposing,
+preparing votes, confirming or publishing an FG source. Validator signing
+records survive restart, including the record of head votes already signed; a
+validator must never sign two different head votes for one slot. A missing
+`get_ac_proposal` result means the proposal duty is skipped.
 
 #### Head vote data
 
@@ -253,11 +257,10 @@ First, the validator constructs `head_vote_data`, a
 
 - Let `head` be the head selected by the AC voting procedure for `slot`.
 - Set `head_vote_data.slot = slot`.
-- Set `head_vote_data.beacon_block_root = hash_tree_root(head)`.
-- Set `head_vote_data.payload_status` to `PAYLOAD_STATUS_PENDING` if
-  `head.slot == slot`. Otherwise, set it to the payload status of `head`
-  selected by the AC voting procedure, `PAYLOAD_STATUS_FULL` or
-  `PAYLOAD_STATUS_EMPTY`.
+- Set `head_vote_data.beacon_block_root = head.root`.
+- Set `head_vote_data.payload_status = head.payload_status`. The prepared node
+  uses `PAYLOAD_STATUS_PENDING` for a current-slot block, and
+  `PAYLOAD_STATUS_FULL` or `PAYLOAD_STATUS_EMPTY` for an earlier block.
 
 The AC voting procedure applies view merge, AC locks and FG restrictions using
 its voting view.

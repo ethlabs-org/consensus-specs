@@ -544,7 +544,7 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree):
     )
     store.time_ms = at_slot(spec, 11) + spec.get_head_vote_due_ms()
     head = spec.get_ac_vote_head(store)
-    assert head == nodes["B1"]
+    assert head == replace(nodes["B1"], payload_status=spec.PAYLOAD_STATUS_PENDING)
     assert store.locks == {replace(original, node=nodes["P"])}
     # Subsequent evidence cannot change this slot's prepared vote or unlock again.
     proposal.body.head_votes[0].data.beacon_block_root = nodes["A"].root
@@ -642,6 +642,21 @@ def test_head_vote_admission_and_gossip_cap(spec, tree, monkeypatch, vote_slot):
         spec.on_head_vote_message(store, invalid)
     assert not seen.head_vote_validator_slots
     assert not store.head_vote_messages
+    if vote_slot == 11:
+        store.time_ms = at_slot(spec, 11) - spec.config.MAXIMUM_GOSSIP_CLOCK_DISPARITY - 1
+        with pytest.raises(spec.GossipIgnore):
+            spec.validate_head_vote_gossip(seen, store, messages[0], store.time_ms, {})
+        spec.on_head_vote_message(store, messages[0])
+        assert not store.pending_head_votes
+        store.time_ms += 1
+        spec.validate_head_vote_gossip(seen, store, messages[0], store.time_ms, {})
+        spec.on_head_vote_message(store, messages[0])
+        assert store.pending_head_votes == [messages[0]]
+        assert not store.head_vote_messages
+        spec.on_tick(store, at_slot(spec, 11))
+        assert not store.pending_head_votes
+        assert store.head_vote_messages[11] == [messages[0]]
+        seen.head_vote_validator_slots = {}
     for message in messages[:2]:
         spec.validate_head_vote_gossip(seen, store, message, store.time_ms, {})
         spec.on_head_vote_message(store, message)
@@ -652,12 +667,58 @@ def test_head_vote_admission_and_gossip_cap(spec, tree, monkeypatch, vote_slot):
         spec.on_head_vote_message(store, message)
     assert store.head_vote_messages[vote_slot] == messages[:2]
     assert store.head_vote_message_receipt_times == receipt_times
-    spec.on_tick(store, at_slot(spec, vote_slot + 2))
+    spec.on_tick(store, at_slot(spec, vote_slot + 2) + spec.config.MAXIMUM_GOSSIP_CLOCK_DISPARITY)
     assert not store.head_vote_messages
     assert not store.head_vote_message_receipt_times
     with pytest.raises(spec.GossipIgnore):
         spec.validate_head_vote_gossip(seen, store, messages[0], store.time_ms, {})
     assert not seen.head_vote_validator_slots
+
+
+@pytest.mark.parametrize("payload_available", [False, True])
+def test_responsive_vote_waits_for_support_payload(spec, tree, payload_available):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11)
+    proposal = store.blocks[nodes["B1"].root]
+    proposal.slot = spec.Slot(11)
+    proposal.body.head_votes.append(
+        spec.HeadVote(
+            data=spec.HeadVoteData(
+                slot=10, beacon_block_root=nodes["A"].root, payload_status=spec.PAYLOAD_STATUS_FULL
+            ),
+            voter_indices=spec.HeadVoteCommitteeIndices(data=[0]),
+        )
+    )
+    proposal.body.head_vote_support.append(spec.HeadVoteSupportBits(data=[True]))
+    store.head_vote_committees[10] = spec.HeadVoteCommittee(
+        data=[0] * spec.HEAD_VOTE_COMMITTEE_SIZE
+    )
+    assert spec.get_ac_vote_head(store) is None
+    if payload_available:
+        store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
+        store.payload_receipt_times[nodes["A"].root] = store.time_ms
+        early = spec.get_ac_vote_head(store)
+        assert early is not None
+    else:
+        assert store.prepared_head_vote is None
+    spec.on_tick(store, at_slot(spec, 11) + spec.get_head_vote_due_ms())
+    assert spec.get_ac_vote_head(store) is not None
+    if payload_available:
+        assert spec.get_ac_vote_head(store) == early
+
+
+def test_responsive_vote_deadline_and_duplicate_preparation(spec, tree):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11)
+    assert spec.get_ac_vote_head(store) is None
+    store.blocks[nodes["B1"].root].slot = spec.Slot(11)
+    vote_half(spec, store, nodes["B"])
+    expected = replace(nodes["B1"], payload_status=spec.PAYLOAD_STATUS_PENDING)
+    assert spec.get_ac_vote_head(store) == expected
+    store.time_ms += spec.get_head_vote_due_ms() + 1
+    assert spec.get_ac_vote_head(store) == expected
+    store.time_ms = at_slot(spec, 12) + spec.get_head_vote_due_ms() + 1
+    assert spec.get_ac_vote_head(store) is None
 
 
 def test_slow_lock_does_not_require_fast_threshold(spec, tree):

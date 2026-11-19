@@ -392,8 +392,9 @@ validation logic is unchanged.
 
 This topic is used to propagate head votes as `HeadVoteMessage`. Forward at most
 two distinct valid vote data values per validator and slot, so one equivocation
-can propagate. Only the current and previous slots are retained in the seen
-cache, with at most four data roots per validator across those slots. Invalid
+can propagate. The current/previous-slot window includes
+`MAXIMUM_GOSSIP_CLOCK_DISPARITY` at both boundaries. Up to three slots may be
+retained near a boundary, with at most six data roots per validator. Invalid
 messages do not consume this allowance. Unknown-block queues, if used, must be
 bounded per peer and globally and expire when the vote is no longer admissible;
 clients may drop queued messages under resource pressure.
@@ -417,15 +418,26 @@ def validate_head_vote_gossip(
     if compute_epoch_at_slot(data.slot) < EIP8453_FORK_EPOCH:
         raise GossipReject("head vote's slot is pre-eip8453")
 
-    current_slot = compute_slot_at_time_ms(store.genesis_time_ms, current_time_ms)
-    previous_slot = saturating_sub(current_slot, 1)
+    current_slot = compute_slot_at_time_ms(
+        store.genesis_time_ms, current_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY
+    )
+    previous_slot = saturating_sub(
+        compute_slot_at_time_ms(
+            store.genesis_time_ms,
+            max(
+                store.genesis_time_ms,
+                saturating_sub(current_time_ms, MAXIMUM_GOSSIP_CLOCK_DISPARITY),
+            ),
+        ),
+        1,
+    )
     seen.head_vote_validator_slots = {
         key: roots
         for key, roots in seen.head_vote_validator_slots.items()
         if previous_slot <= key[0] <= current_slot
     }
     # [IGNORE] Only current and previous slot votes are forwarded
-    if data.slot not in [previous_slot, current_slot]:
+    if not previous_slot <= data.slot <= current_slot:
         raise GossipIgnore("head vote is not for the current or previous slot")
 
     # [IGNORE] Forward at most two distinct vote data roots per validator and slot
