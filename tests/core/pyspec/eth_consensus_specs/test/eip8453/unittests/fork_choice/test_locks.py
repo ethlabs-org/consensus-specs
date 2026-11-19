@@ -812,7 +812,7 @@ def test_vote_readiness_waits_only_for_supported_heads(spec, tree, supported, ma
     unknown = spec.ForkChoiceNode(
         root=spec.Root(b"\x99" * 32), payload_status=spec.PAYLOAD_STATUS_EMPTY
     )
-    propose_votes(spec, store, nodes, [(unknown, [0, 1], supported)])
+    propose_votes(spec, store, nodes, [(unknown, [0], supported)])
     # The proposal is by the proposer that the head chain expects
     for state in store.block_states.values():
         state.proposer_lookahead[11 % spec.SLOTS_PER_EPOCH] = 1
