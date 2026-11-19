@@ -72,6 +72,9 @@
   - [Beacon state accessors](#beacon-state-accessors)
     - [New `get_current_round`](#new-get_current_round)
     - [New `get_previous_round`](#new-get_previous_round)
+    - [New `get_previous_round_epoch`](#new-get_previous_round_epoch)
+    - [New `is_previous_round_duty`](#new-is_previous_round_duty)
+    - [New `is_previous_round_settled`](#new-is_previous_round_settled)
     - [New `get_attestation_committee`](#new-get_attestation_committee)
     - [New `get_attestation_epoch`](#new-get_attestation_epoch)
     - [New `get_aggregate_participants`](#new-get_aggregate_participants)
@@ -583,7 +586,7 @@ keeps its name but moves to a new position.
 
 ```python
 class BeaconState(ProgressiveContainer):
-    ACTIVE_FIELDS = active_fields(width=57, gaps=(8, 9, 10, 15, 16, 17, 18, 19, 20, 28))
+    ACTIVE_FIELDS = active_fields(width=58, gaps=(8, 9, 10, 15, 16, 17, 18, 19, 20, 28))
 
     genesis_time: Uint64
     genesis_validators_root: Root
@@ -648,13 +651,15 @@ class BeaconState(ProgressiveContainer):
     # [New in EIP8453]
     progress_participation: HeightParticipation
     # [New in EIP8453]
-    round_participation: RoundParticipation
+    current_round_participation: RoundParticipation
     # [New in EIP8453]
     pending_finality: PendingFinalities
     # [New in EIP8453]
     head_vote_participation: HeadVoteParticipation
     # [New in EIP8453]
     head_vote_committee_window: HeadVoteCommitteeWindow
+    # [New in EIP8453]
+    previous_round_participation: RoundParticipation
 ```
 
 ## Helpers
@@ -1059,6 +1064,45 @@ def get_previous_round(state: BeaconState) -> Round:
     return current_round - 1
 ```
 
+#### New `get_previous_round_epoch`
+
+```python
+def get_previous_round_epoch(state: BeaconState) -> Epoch:
+    """
+    Return the epoch of the previous round.
+    """
+    return compute_epoch_at_slot(compute_start_slot_at_round(get_previous_round(state)))
+```
+
+#### New `is_previous_round_duty`
+
+*Note*: Each committee has one attestation duty in every round, so the latest
+duty of a validator before a slot is in the current round or the previous one.
+
+```python
+def is_previous_round_duty(state: BeaconState, index: ValidatorIndex) -> bool:
+    """
+    Check if the latest attestation duty of the validator at ``index`` before
+    ``state.slot`` is in the previous round.
+    """
+    committee_index = CommitteeIndex(index % ATTESTATION_COMMITTEES_PER_ROUND)
+    duty_slot = compute_attestation_committee_slot(get_current_round(state), committee_index)
+    return duty_slot >= state.slot
+```
+
+#### New `is_previous_round_settled`
+
+```python
+def is_previous_round_settled(state: BeaconState) -> bool:
+    """
+    Check if the previous round is a full round after the EIP-8453 fork, so
+    that its participation is settled.
+    """
+    if get_current_round(state) == GENESIS_ROUND:
+        return False
+    return get_previous_round_epoch(state) >= state.fork.epoch
+```
+
 #### New `get_attestation_committee`
 
 *Note*: The committee at `index` holds the validators whose index is `index`
@@ -1205,17 +1249,18 @@ def get_inclusion_list_committee(state: BeaconState, slot: Slot) -> InclusionLis
 #### Modified `get_unslashed_participating_indices`
 
 *Note*: The function `get_unslashed_participating_indices` is rewritten to use
-round participation.
+the participation of the previous round, which is settled at the end of the
+current round.
 
 ```python
 def get_unslashed_participating_indices(state: BeaconState, flag_index: int) -> set[ValidatorIndex]:
     """
     Return the set of validator indices that are both active and unslashed for
-    the given ``flag_index`` in the current round.
+    the given ``flag_index`` in the previous round.
     """
     participating_indices: set[ValidatorIndex] = set()
-    for index in get_active_validator_indices(state, get_current_epoch(state)):
-        flags = state.round_participation[index]
+    for index in get_active_validator_indices(state, get_previous_round_epoch(state)):
+        flags = state.previous_round_participation[index]
         if has_flag(flags, flag_index) and not state.validators[index].slashed:
             participating_indices.add(index)
     return participating_indices
@@ -1333,12 +1378,14 @@ def get_flag_index_rewards(state: BeaconState, flag_index: int) -> Sequence[Gwei
 #### New `add_participation_flag`
 
 ```python
-def add_participation_flag(state: BeaconState, index: ValidatorIndex, flag_index: int) -> None:
+def add_participation_flag(
+    participation: RoundParticipation, index: ValidatorIndex, flag_index: int
+) -> None:
     """
     Add the flag at ``flag_index`` to the participation of the validator at
-    ``index`` in the current round.
+    ``index`` in ``participation``.
     """
-    state.round_participation[index] = add_flag(state.round_participation[index], flag_index)
+    participation[index] = add_flag(participation[index], flag_index)
 ```
 
 ### Validator registry
@@ -1355,7 +1402,9 @@ def add_validator_to_registry(
     set_or_append_list(state.balances, index, amount)
     set_or_append_list(state.inactivity_scores, index, Uint64(0))
     # [New in EIP8453]
-    set_or_append_list(state.round_participation, index, ParticipationFlags(0b0000_0000))
+    set_or_append_list(state.current_round_participation, index, ParticipationFlags(0b0000_0000))
+    # [New in EIP8453]
+    set_or_append_list(state.previous_round_participation, index, ParticipationFlags(0b0000_0000))
     # [New in EIP8453]
     set_or_append_list(state.target_participation, index, Boolean(False))
     # [New in EIP8453]
@@ -1421,8 +1470,11 @@ def process_slot(state: BeaconState) -> None:
 
 ```python
 def process_round(state: BeaconState) -> None:
-    process_inactivity_updates(state)
-    process_rewards(state)
+    # The previous round is settled once its attestations have had the current
+    # round to be included
+    if is_previous_round_settled(state):
+        process_inactivity_updates(state)
+        process_rewards(state)
     process_participation_flag_updates(state)
 ```
 
@@ -1435,7 +1487,7 @@ inactivity leak.
 ```python
 def process_inactivity_updates(state: BeaconState) -> None:
     participating_indices = get_unslashed_participating_indices(state, PROGRESS_FLAG_INDEX)
-    for index in get_active_validator_indices(state, get_current_epoch(state)):
+    for index in get_active_validator_indices(state, get_previous_round_epoch(state)):
         if index in participating_indices:
             state.inactivity_scores[index] = saturating_sub(
                 state.inactivity_scores[index], INACTIVITY_SCORE_RECOVERY_RATE
@@ -1496,13 +1548,16 @@ round.
 ```python
 def process_participation_flag_updates(state: BeaconState) -> None:
     # [Modified in EIP8453]
-    state.round_participation = RoundParticipation(
+    state.previous_round_participation = state.current_round_participation
+    state.current_round_participation = RoundParticipation(
         data=[ParticipationFlags(0b0000_0000)] * len(state.validators)
     )
     # [New in EIP8453]
     for index in range(len(state.validators)):
         if state.progress_participation[index]:
-            add_participation_flag(state, ValidatorIndex(index), PROGRESS_FLAG_INDEX)
+            add_participation_flag(
+                state.current_round_participation, ValidatorIndex(index), PROGRESS_FLAG_INDEX
+            )
 ```
 
 ### Epoch processing
@@ -1733,9 +1788,11 @@ def process_legacy_attester_slashing(
 
 *Note*: The function `process_attestation` is rewritten for the finality gadget.
 Flags are credited only the first time a validator's progress or finality
-participation is recorded, and count toward the round in which the attestation
-is included. Only attestations for the current target are included, and only
-signers that are active are counted.
+participation is recorded. They count toward the round of the signer's latest
+attestation duty before the slot of the block, the current or the previous
+round, so an attestation can be included up to the signer's next duty and still
+count for the round of its duty. Only attestations for the current target are
+included, and only signers that are active are counted.
 
 ```python
 def process_attestation(state: BeaconState, attestation: Attestation) -> None:
@@ -1752,14 +1809,22 @@ def process_attestation(state: BeaconState, attestation: Attestation) -> None:
         if not is_active_validator(state.validators[index], get_current_epoch(state)):
             continue
         base_reward = get_round_base_reward(state, index)
+        # [New in EIP8453]
+        # Flags count for the round of the signer's latest duty before this slot
+        if is_previous_round_duty(state, index):
+            duty_participation = state.previous_round_participation
+        else:
+            duty_participation = state.current_round_participation
         for pending in state.pending_finality:
             if pending.checkpoint == data.finality and not pending.participation[index]:
                 pending.participation[index] = Boolean(True)
-                add_participation_flag(state, index, FINALITY_FLAG_INDEX)
+                add_participation_flag(duty_participation, index, FINALITY_FLAG_INDEX)
                 proposer_reward_numerator += base_reward * FINALITY_WEIGHT
         if not state.progress_participation[index]:
             state.progress_participation[index] = Boolean(True)
-            add_participation_flag(state, index, PROGRESS_FLAG_INDEX)
+            add_participation_flag(duty_participation, index, PROGRESS_FLAG_INDEX)
+            # Progress at the current height also counts for the current round
+            add_participation_flag(state.current_round_participation, index, PROGRESS_FLAG_INDEX)
             proposer_reward_numerator += base_reward * PROGRESS_WEIGHT
         if not data.timeout:
             state.target_participation[index] = Boolean(True)

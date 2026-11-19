@@ -141,13 +141,19 @@ def upgrade_to_eip8453(pre: heze.BeaconState) -> BeaconState:
         # [New in EIP8453]
         progress_participation=HeightParticipation(data=[Boolean(False)] * len(pre.validators)),
         # [New in EIP8453]
-        round_participation=RoundParticipation(data=[ParticipationFlags(0)] * len(pre.validators)),
+        current_round_participation=RoundParticipation(
+            data=[ParticipationFlags(0)] * len(pre.validators)
+        ),
         # [New in EIP8453]
         pending_finality=PendingFinalities(),
         # [New in EIP8453]
         head_vote_participation=HeadVoteParticipation(),
         # [New in EIP8453]
         head_vote_committee_window=HeadVoteCommitteeWindow(),
+        # [New in EIP8453]
+        previous_round_participation=RoundParticipation(
+            data=[ParticipationFlags(0)] * len(pre.validators)
+        ),
     )
 
     # [New in EIP8453]
