@@ -258,7 +258,13 @@ def test_unlock_half_moves_to_common_ancestor_preserving_fields(spec, tree):
     original = lock(spec, nodes["A"], fast=False)
     store.locks = {original}
     vote_half(spec, store, nodes["B"])
-    spec.unlock(store, spec.Slot(10), store.time_ms)
+    spec.unlock(
+        store,
+        spec.Slot(10),
+        *spec.get_combined_local_view(
+            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
+        ),
+    )
     assert store.locks == {replace(original, node=nodes["P"])}
 
 
@@ -268,7 +274,13 @@ def test_unlock_below_half_keeps_lock(spec, tree):
     store.locks = {original}
     for validator in range(spec.HEAD_VOTE_COMMITTEE_SIZE // 2 - 1):
         vote(spec, store, nodes["B"], validator)
-    spec.unlock(store, spec.Slot(10), store.time_ms)
+    spec.unlock(
+        store,
+        spec.Slot(10),
+        *spec.get_combined_local_view(
+            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
+        ),
+    )
     assert store.locks == {original}
 
 
@@ -278,7 +290,13 @@ def test_unlock_does_not_move_same_or_newer_slot_lock(spec, tree, lock_slot):
     original = lock(spec, nodes["A"], slot=lock_slot)
     store.locks = {original}
     vote_half(spec, store, nodes["B"])
-    spec.unlock(store, spec.Slot(10), store.time_ms)
+    spec.unlock(
+        store,
+        spec.Slot(10),
+        *spec.get_combined_local_view(
+            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
+        ),
+    )
     assert store.locks == {original}
 
 
@@ -291,7 +309,13 @@ def test_unlock_equivocators_count_without_resolved_votes(spec, tree):
     for validator in range(spec.HEAD_VOTE_COMMITTEE_SIZE // 2):
         vote(spec, store, unknown_a, validator)
         vote(spec, store, unknown_b, validator)
-    spec.unlock(store, spec.Slot(10), store.time_ms)
+    spec.unlock(
+        store,
+        spec.Slot(10),
+        *spec.get_combined_local_view(
+            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
+        ),
+    )
     # Half equivocating opposes every ancestor, including F. Use the explicit F fallback.
     assert store.locks == {replace(original, node=spec.get_fg_frame(store).finalized_node)}
 
@@ -305,7 +329,13 @@ def test_unlock_equivocator_not_counted_twice(spec, tree):
     vote(spec, store, nodes["B"], 0)
     for validator in range(1, spec.HEAD_VOTE_COMMITTEE_SIZE // 2 - 1):
         vote(spec, store, nodes["B"], validator)
-    spec.unlock(store, spec.Slot(10), store.time_ms)
+    spec.unlock(
+        store,
+        spec.Slot(10),
+        *spec.get_combined_local_view(
+            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
+        ),
+    )
     assert store.locks == {original}
 
 
@@ -316,7 +346,13 @@ def test_unlock_counts_duplicate_committee_seats(spec, tree):
     vote(spec, store, nodes["B"], 0)
     half = spec.HEAD_VOTE_COMMITTEE_SIZE // 2
     store.head_vote_committees[10] = spec.HeadVoteCommittee(data=[0] * half + [1] * half)
-    spec.unlock(store, spec.Slot(10), store.time_ms)
+    spec.unlock(
+        store,
+        spec.Slot(10),
+        *spec.get_combined_local_view(
+            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
+        ),
+    )
     assert store.locks == {replace(original, node=nodes["P"])}
 
 
@@ -328,7 +364,13 @@ def test_unlock_full_empty_conflict_moves_to_pending(spec, tree):
     store.payload_receipt_times[nodes["A"].root] = spec.Uint64(0)
     full = replace(nodes["A"], payload_status=spec.PAYLOAD_STATUS_FULL)
     vote_half(spec, store, full)
-    spec.unlock(store, spec.Slot(10), store.time_ms)
+    spec.unlock(
+        store,
+        spec.Slot(10),
+        *spec.get_combined_local_view(
+            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
+        ),
+    )
     pending = replace(nodes["A"], payload_status=spec.PAYLOAD_STATUS_PENDING)
     assert store.locks == {replace(original, node=pending)}
 
@@ -336,7 +378,13 @@ def test_unlock_full_empty_conflict_moves_to_pending(spec, tree):
 def test_unlock_removes_expired_locks(spec, tree):
     store, nodes = tree
     store.locks = {lock(spec, nodes["A"], expiry=10)}
-    spec.unlock(store, spec.Slot(10), store.time_ms)
+    spec.unlock(
+        store,
+        spec.Slot(10),
+        *spec.get_combined_local_view(
+            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
+        ),
+    )
     assert not store.locks
 
 
@@ -448,6 +496,54 @@ def test_ac_vote_head_keeps_payload_restriction(spec, tree):
     assert full not in restricted
     assert nodes["A1"] in spec.get_viable_subtree(store, frame, restricted)
     assert spec.get_ac_vote_head(store) == nodes["A1"]
+
+
+@pytest.mark.parametrize("proposal", [False, True])
+def test_duty_unlock_uses_its_view(spec, tree, proposal):
+    store, nodes = tree
+    original = lock(spec, nodes["A"])
+    store.locks = {original}
+    late = at_slot(spec, 10) + spec.get_view_freeze_ms()
+    for validator in range(spec.HEAD_VOTE_COMMITTEE_SIZE // 2):
+        vote(spec, store, nodes["B"], validator, received=late)
+    store.time_ms = at_slot(spec, 11)
+    if proposal:
+        head, _, _ = spec.get_ac_proposal(store)
+        assert head == nodes["B"]
+        assert store.locks == {replace(original, node=nodes["P"])}
+    else:
+        spec.on_tick(store, store.time_ms + spec.get_head_vote_due_ms())
+        assert spec.get_ac_vote_head(store) == nodes["A"]
+        assert store.locks == {original}
+
+
+def test_voter_unlock_uses_proposer_support_once(spec, tree):
+    store, nodes = tree
+    original = lock(spec, nodes["A"])
+    store.locks = {original}
+    proposal = store.blocks[nodes["B1"].root]
+    proposal.slot = spec.Slot(11)
+    indices = list(range(spec.HEAD_VOTE_COMMITTEE_SIZE // 2))
+    proposal.body.head_votes.append(
+        spec.HeadVote(
+            data=spec.HeadVoteData(
+                slot=10, beacon_block_root=nodes["B"].root, payload_status=spec.PAYLOAD_STATUS_EMPTY
+            ),
+            voter_indices=spec.HeadVoteCommitteeIndices(data=indices),
+        )
+    )
+    proposal.body.head_vote_support.append(spec.HeadVoteSupportBits(data=[True] * len(indices)))
+    store.head_vote_committees[10] = spec.HeadVoteCommittee(
+        data=list(range(spec.HEAD_VOTE_COMMITTEE_SIZE))
+    )
+    store.time_ms = at_slot(spec, 11) + spec.get_head_vote_due_ms()
+    head = spec.get_ac_vote_head(store)
+    assert head == nodes["B1"]
+    assert store.locks == {replace(original, node=nodes["P"])}
+    # Subsequent evidence cannot change this slot's prepared vote or unlock again.
+    proposal.body.head_votes[0].data.beacon_block_root = nodes["A"].root
+    assert spec.get_ac_vote_head(store) == head
+    assert store.locks == {replace(original, node=nodes["P"])}
 
 
 def test_slow_lock_does_not_require_fast_threshold(spec, tree):

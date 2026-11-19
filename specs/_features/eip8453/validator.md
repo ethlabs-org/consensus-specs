@@ -234,12 +234,12 @@ position in block processing.
 A validator on the head vote committee of `slot` creates, signs and broadcasts a
 `HeadVoteMessage` for that slot.
 
-*Note*: In the Goldilocks schedule, head voting occurs one quarter of the way
-through the slot, after unlocking against the previous slot's votes. The
-validator must satisfy the fork choice's observation requirement after waking
-up.
-
-*TODO*: Specify the EIP-8453 head-vote deadline and voting helper.
+Every node calls `get_ac_vote_head(store)` at `get_head_vote_due_ms()` into the
+slot, even if none of its validators belongs to the head vote committee. This
+prepares one cached head per slot and unlocks using the frozen local view merged
+with the current proposals. Only assigned validators sign and broadcast votes.
+Repeated requests in the same slot return the prepared head without unlocking
+again.
 
 #### Head vote data
 

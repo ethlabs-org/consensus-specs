@@ -180,6 +180,7 @@ class Store:
     head_vote_messages: dict[Slot, list[HeadVoteMessage]]
     head_vote_message_receipt_times: dict[Root, Uint64]
     head_vote_committees: dict[Slot, HeadVoteCommittee]
+    prepared_head_vote: tuple[Slot, ForkChoiceNode] | None = None
 ```
 
 ### Modified `get_forkchoice_store`
@@ -1473,14 +1474,11 @@ when their resolved vote supports a conflicting node. Count each validator's
 committee seats once. Only locks from slots before the vote slot can move.
 
 ```python
-def unlock(store: Store, slot: Slot, time_ms: Uint64) -> None:
+def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVote]) -> None:
     """
-    Move older locks to ancestors opposed by fewer than half the committee seats.
+    Move older locks using the supplied vote and support view.
     """
     fg_frame = get_fg_frame(store)
-    votes, support_votes = get_combined_local_view(
-        store, slot, receipt_threshold_ms=INFINITE_TIME_MS, resolution_threshold_ms=INFINITE_TIME_MS
-    )
     equivocating_indices = get_equivocating_indices(votes)
 
     def is_opposed_by_majority(node: ForkChoiceNode) -> bool:
@@ -1498,7 +1496,7 @@ def unlock(store: Store, slot: Slot, time_ms: Uint64) -> None:
         return 2 * opposing_score >= get_head_vote_committee_seats_count()
 
     locks = set()
-    for lock in get_live_locks(store, fg_frame, time_ms):
+    for lock in get_live_locks(store, fg_frame, store.time_ms):
         node = lock.node
         if lock.slot < slot:
             fallback_path = {
@@ -1548,9 +1546,10 @@ def is_valid_head_vote_message(state: BeaconState, message: HeadVoteMessage) -> 
 
 ### Modified `on_tick`
 
-*Note*: Updates the store time, then runs an unlocking or confirmation duty if
-scheduled at `time_ms`. Callers must process this tick before other events at
-the same timestamp.
+*Note*: Updates the store time, then prepares the head vote or runs confirmation
+when scheduled at `time_ms`. Every node prepares the head vote, including nodes
+without a validator on the committee. Callers must process this tick before
+other events at the same timestamp.
 
 ```python
 def on_tick(store: Store, time_ms: Uint64) -> None:
@@ -1560,7 +1559,7 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
     slot = compute_slot_at_time_ms(store.genesis_time_ms, time_ms)
 
     if slot > GENESIS_SLOT and time_into_slot_ms == get_head_vote_due_ms():
-        unlock(store, slot - 1, time_ms)
+        get_ac_vote_head(store)
 
     if slot > GENESIS_SLOT and time_into_slot_ms == get_support_cutoff_ms():
         update_confirmation(store, slot - 1)
@@ -1722,6 +1721,7 @@ def get_ac_proposal(
 
     # Build the view from P2P messages only
     votes, support_votes = compute_merged_view((vote_messages, support_indices), ([], []))
+    unlock(store, current_slot - 1, votes, support_votes)
     head = get_head_in_tree(
         store=store,
         fg_frame=fg_frame,
@@ -1750,6 +1750,8 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode:
     assert get_time_into_slot_ms(store) == get_head_vote_due_ms()
 
     current_slot = get_current_slot(store)
+    if store.prepared_head_vote is not None and store.prepared_head_vote[0] == current_slot:
+        return store.prepared_head_vote[1]
     if current_slot == GENESIS_SLOT:
         return ForkChoiceNode(
             root=store.finalized_checkpoint.root,
@@ -1771,6 +1773,7 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode:
     proposer_view = get_proposer_view(store, current_slot, current_slot - 1)
     # Merge views
     votes, support_votes = compute_merged_view(local_view, proposer_view)
+    unlock(store, current_slot - 1, votes, support_votes)
 
     # Run over voter viable subtree
     voter_subtree = get_voter_subtree(store, fg_frame.tree, current_slot)
@@ -1790,9 +1793,9 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode:
         store.blocks[head.root].slot < current_slot
         and head.payload_status == PAYLOAD_STATUS_PENDING
     ):
-        return ForkChoiceNode(root=head.root, payload_status=PAYLOAD_STATUS_EMPTY)
-    else:
-        return head
+        head = ForkChoiceNode(root=head.root, payload_status=PAYLOAD_STATUS_EMPTY)
+    store.prepared_head_vote = (current_slot, head)
+    return head
 ```
 
 ### New `get_ac_frame`
