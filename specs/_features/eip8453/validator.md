@@ -306,9 +306,11 @@ assigned slot and staggered committee schedule.
 
 #### Attestation data
 
-First, obtain `source` and `head` from the same AC-to-FG observation. The source
-is the deepest block in the viable tree passing the fast test in the applicable
-confirmation update. If no such block exists, the validator does not attest.
+First, obtain `source` and `head` from `get_ac_frame(store)` at or after the
+support cutoff. For a joined node, `source` is the deepest viable effective live
+fast-lock node whose confirmation slot is at least the current slot minus two.
+Slow locks do not provide FG sources. If `source` is `None`, the validator does
+not attest.
 
 Let `source_state` and `head_state` be the states after processing `source` and
 `head`, respectively:
@@ -318,7 +320,7 @@ Let `source_state` and `head_state` be the states after processing `source` and
 - Let `finalized_height = head_state.finalized_checkpoint.height`.
 
 If `target.root == Root()` because `source` advanced the height, set
-`target.root = hash_tree_root(source)`.
+`target.root = source.root`.
 
 *Note*: The height vote comes from the source state. The finality pair comes
 from the head state.

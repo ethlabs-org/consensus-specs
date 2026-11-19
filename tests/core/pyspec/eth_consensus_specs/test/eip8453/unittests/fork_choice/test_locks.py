@@ -12,8 +12,10 @@ from eth_consensus_specs.test.helpers.keys import privkeys
 
 
 @pytest.fixture
-def spec(preset):
-    return import_module(f"eth_consensus_specs.eip8453.{context.DEFAULT_TEST_PRESET}")
+def spec(preset, monkeypatch):
+    spec = import_module(f"eth_consensus_specs.eip8453.{context.DEFAULT_TEST_PRESET}")
+    monkeypatch.setattr(spec, "config", spec.config._replace(EIP8453_FORK_EPOCH=0))
+    return spec
 
 
 def at_slot(spec, slot):
@@ -559,6 +561,12 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree):
     store.head_vote_committees[10] = spec.HeadVoteCommittee(
         data=list(range(spec.HEAD_VOTE_COMMITTEE_SIZE))
     )
+    state = store.block_states[nodes["B1"].root]
+    epoch = spec.compute_epoch_at_slot(spec.Slot(10))
+    offset = int(epoch - spec.get_current_epoch(state) + 1) * int(spec.SLOTS_PER_EPOCH)
+    state.head_vote_committee_window[offset + 10 % spec.SLOTS_PER_EPOCH] = (
+        store.head_vote_committees[10]
+    )
     store.time_ms = at_slot(spec, 11)
     head = spec.get_ac_vote_head(store)
     assert head == replace(nodes["B1"], payload_status=spec.PAYLOAD_STATUS_PENDING)
@@ -572,6 +580,9 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree):
 def propose_votes(spec, store, nodes, votes):
     proposal = store.blocks[nodes["B1"].root]
     proposal.slot = spec.Slot(11)
+    store.head_vote_committees[10] = spec.get_head_vote_committee(
+        store.block_states[nodes["B1"].root], spec.Slot(10)
+    )
     for node, voters, supported in votes:
         proposal.body.head_votes.append(
             spec.HeadVote(
@@ -961,6 +972,7 @@ def test_genesis_deadline_vote(spec, tree):
     assert spec.get_ac_vote_head(store) is None
     spec.on_tick(store, spec.get_head_vote_due_ms())
     expected = replace(nodes["F"], payload_status=spec.PAYLOAD_STATUS_PENDING)
+    assert store.prepared_head_vote == (spec.GENESIS_SLOT, expected)
     assert spec.get_ac_vote_head(store) == expected
     store.time_ms += 1
     assert spec.get_ac_vote_head(store) == expected
@@ -995,6 +1007,115 @@ def test_head_vote_gossip_pulls_up_stale_head(spec, tree, monkeypatch):
     spec.on_head_vote_message(store, message)
     assert store.head_vote_messages[slot] == [message]
     assert all(block_state.slot == 0 for block_state in store.block_states.values())
+
+
+@pytest.mark.parametrize("matching", [False, True])
+def test_block_committee_mismatch_excludes_votes_not_block(spec, tree, monkeypatch, matching):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11) + spec.get_head_vote_due_ms() + 1
+    propose_votes(spec, store, nodes, [(nodes["B"], [0], True)])
+    block = store.blocks.pop(nodes["B1"].root)
+    if not matching:
+        store.head_vote_committees[10] = spec.HeadVoteCommittee(
+            data=[1] * spec.HEAD_VOTE_COMMITTEE_SIZE
+        )
+    expected_committee = store.head_vote_committees[10]
+    # Isolate fork-choice admission from the already-validated state transition.
+    monkeypatch.setattr(spec, "state_transition", lambda state, signed, validate_result: None)
+    signed = spec.SignedBeaconBlock(message=block)
+    spec.on_block(store, signed)
+    assert spec.hash_tree_root(block) in store.blocks
+    assert store.head_vote_committees[10] == expected_committee
+    for view in (
+        spec.get_proposer_view(store, spec.Slot(11), spec.Slot(10)),
+        spec.get_local_view_from_blocks(
+            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
+        ),
+    ):
+        assert len(view[0]) == int(matching)
+        assert view[1] == ([True] if matching else [])
+
+
+@pytest.mark.parametrize("status", [0, 1, 2])
+def test_optimistic_confirmation_requires_resolved_support(spec, tree, status):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11) + 1
+    store.blocks[nodes["A1"].root].slot = spec.Slot(11)
+    store.payloads[nodes["A1"].root] = spec.ExecutionPayloadEnvelope()
+    store.payload_receipt_times[nodes["A1"].root] = store.time_ms
+    node = replace(nodes["A1"], payload_status=spec.PayloadStatus(status))
+    vote(spec, store, node, 0, slot=11)
+    store.head_vote_committees[11] = spec.HeadVoteCommittee(
+        data=[0] * spec.HEAD_VOTE_COMMITTEE_SIZE
+    )
+    spec.update_optimistic_confirmation(store)
+    if status == spec.PAYLOAD_STATUS_PENDING:
+        assert store.latest_confirmed == node
+    else:
+        assert store.latest_confirmed.root == nodes["F"].root
+        assert not store.locks
+
+
+@pytest.mark.parametrize(("block_slot", "status"), [(11, 0), (11, 1), (11, 2), (4, 2), (4, 0)])
+def test_receipt_enforces_vote_slot_payload_status(spec, tree, monkeypatch, block_slot, status):
+    store, nodes = tree
+    monkeypatch.setattr(spec, "config", spec.config._replace(EIP8453_FORK_EPOCH=0))
+    store.time_ms = at_slot(spec, 11) + 1
+    store.blocks[nodes["A1"].root].slot = spec.Slot(block_slot)
+    for state in store.block_states.values():
+        state.validators.append(spec.Validator(pubkey=spec.bls.SkToPk(1)))
+    data = spec.HeadVoteData(slot=11, beacon_block_root=nodes["A1"].root, payload_status=status)
+    state = store.block_states[nodes["F"].root]
+    domain = spec.get_domain(state, spec.DOMAIN_HEAD_VOTE, spec.compute_epoch_at_slot(data.slot))
+    message = spec.HeadVoteMessage(
+        validator_index=0,
+        data=data,
+        signature=spec.bls.Sign(1, spec.compute_signing_root(data, domain)),
+    )
+    if (block_slot == 11) == (status == spec.PAYLOAD_STATUS_PENDING):
+        spec.on_head_vote_message(store, message)
+        assert store.head_vote_messages[11] == [message]
+        assert store.latest_confirmed == replace(
+            nodes["A1"], payload_status=spec.PayloadStatus(status)
+        )
+    else:
+        with pytest.raises(AssertionError):
+            spec.on_head_vote_message(store, message)
+        assert not store.head_vote_messages
+        assert not store.locks
+
+
+def test_optimistic_payload_tie_uses_lowest_status(spec, tree):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11) + 1
+    store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
+    store.payload_receipt_times[nodes["A"].root] = store.time_ms
+    for status in (spec.PAYLOAD_STATUS_FULL, spec.PAYLOAD_STATUS_EMPTY):
+        vote(spec, store, replace(nodes["A"], payload_status=status), 0, slot=11)
+    store.head_vote_committees[11] = spec.HeadVoteCommittee(
+        data=[0] * spec.HEAD_VOTE_COMMITTEE_SIZE
+    )
+    spec.update_optimistic_confirmation(store)
+    assert store.latest_confirmed == nodes["A"]
+
+
+@pytest.mark.parametrize("root_byte", [7, 8, 9, 10])
+def test_optimistic_equal_rank_uses_lowest_root(spec, tree, root_byte):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11) + 1
+    original = nodes["B1"].root
+    root = spec.Root(bytes([root_byte]) * 32)
+    for mapping in (store.blocks, store.block_states, store.block_receipt_times):
+        mapping[root] = mapping.pop(original)
+    node_b = replace(nodes["B1"], root=root)
+    store.blocks[root].slot = store.blocks[nodes["A1"].root].slot
+    for node in (nodes["A1"], node_b):
+        vote(spec, store, node, 0, slot=11)
+    store.head_vote_committees[11] = spec.HeadVoteCommittee(
+        data=[0] * spec.HEAD_VOTE_COMMITTEE_SIZE
+    )
+    spec.update_optimistic_confirmation(store)
+    assert store.latest_confirmed == nodes["A1"]
 
 
 def test_slow_lock_does_not_require_fast_threshold(spec, tree):
