@@ -177,6 +177,11 @@ def is_finalized_ancestor(store: Store, state: BeaconState, root: Root) -> bool:
     """
     Check if the finalized block of ``state`` is an ancestor of ``root``.
     """
+    # [New in EIP8453]
+    # Until the first Casper FFG finalization, the finalized root is the zero
+    # root, which stands for the genesis block, an ancestor of every block
+    if state.finalized_checkpoint.root == Root():
+        return True
     node = ForkChoiceNode(root=root, payload_status=PAYLOAD_STATUS_PENDING)
     return get_ancestor(store, node, state.finalized_slot).root == state.finalized_checkpoint.root
 ```

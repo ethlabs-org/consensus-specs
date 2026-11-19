@@ -13,6 +13,20 @@ from eth_consensus_specs.heze import {preset_name} as heze
 """
 
     @classmethod
+    def sundry_functions(cls) -> str:
+        return """
+_get_upgraded_state = get_upgraded_state
+_get_upgraded_heze_state = cache_this(
+    lambda state: state.hash_tree_root(), _get_upgraded_state, lru_size=64)
+
+
+def get_upgraded_state(state: heze.BeaconState | BeaconState) -> BeaconState:
+    if isinstance(state, heze.BeaconState):
+        return _get_upgraded_heze_state(state)
+    return state
+"""
+
+    @classmethod
     def hardcoded_ssz_dep_constants(cls) -> dict[str, str]:
         return {
             "FINALIZED_ROOT_GINDEX_EIP8453": "GeneralizedIndex(5943)",

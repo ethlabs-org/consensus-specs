@@ -86,6 +86,7 @@
   - [Modified `on_tick`](#modified-on_tick)
   - [Modified `on_block`](#modified-on_block)
   - [Modified `on_execution_payload_envelope`](#modified-on_execution_payload_envelope)
+  - [Modified `notify_ptc_messages`](#modified-notify_ptc_messages)
   - [Modified `on_payload_attestation_message`](#modified-on_payload_attestation_message)
   - [New `on_head_vote_message`](#new-on_head_vote_message)
 - [Internal API](#internal-api)
@@ -1901,7 +1902,8 @@ def on_block(store: Store, signed_block: SignedBeaconBlock | heze.SignedBeaconBl
     # A block from before the fork that arrives late is processed with the Heze
     # state transition, and its Heze post-state is stored like those of the
     # blocks before the fork
-    if isinstance(signed_block, heze.SignedBeaconBlock):
+    if compute_epoch_at_slot(block.slot) < EIP8453_FORK_EPOCH:
+        assert isinstance(signed_block, heze.SignedBeaconBlock)
         heze_state = store.block_states[block.parent_root].copy()
         assert isinstance(heze_state, heze.BeaconState)
         heze.state_transition(heze_state, signed_block, validate_result=True)
@@ -1910,8 +1912,13 @@ def on_block(store: Store, signed_block: SignedBeaconBlock | heze.SignedBeaconBl
         store.payload_timeliness_vote[block_root] = [None] * PTC_SIZE
         store.payload_data_availability_vote[block_root] = [None] * PTC_SIZE
         record_block_receipt_time(store, block_root)
+        # Notify the store about the payload attestations in the block, read
+        # with its Heze post-state
+        notify_ptc_messages(store, heze_state, signed_block.message.body.payload_attestations)
         return
 
+    # A block at or after the fork is an EIP-8453 block
+    assert isinstance(signed_block, SignedBeaconBlock)
     block = signed_block.message
 
     # [Modified in EIP8453]
@@ -1996,6 +2003,44 @@ def on_execution_payload_envelope(
     get_ac_vote_head(store)
 ```
 
+### Modified `notify_ptc_messages`
+
+```python
+def notify_ptc_messages(
+    store: Store,
+    # [Modified in EIP8453]
+    state: BeaconState | heze.BeaconState,
+    payload_attestations: Sequence[PayloadAttestation],
+) -> None:
+    """
+    Extracts a list of ``PayloadAttestationMessage`` from ``payload_attestations`` and updates the store with them
+    These Payload attestations are assumed to be in the beacon block hence signature verification is not needed
+    """
+    if state.slot == 0:
+        return
+    for payload_attestation in payload_attestations:
+        # [Modified in EIP8453]
+        # A block before the fork has the Heze PTC
+        if isinstance(state, heze.BeaconState):
+            indexed_payload_attestation = heze.get_indexed_payload_attestation(
+                state, payload_attestation
+            )
+        else:
+            indexed_payload_attestation = get_indexed_payload_attestation(
+                state, payload_attestation
+            )
+        for idx in indexed_payload_attestation.attesting_indices:
+            on_payload_attestation_message(
+                store,
+                PayloadAttestationMessage(
+                    validator_index=idx,
+                    data=payload_attestation.data,
+                    signature=BLSSignature(),
+                ),
+                is_from_block=True,
+            )
+```
+
 ### Modified `on_payload_attestation_message`
 
 ```python
@@ -2010,19 +2055,20 @@ def on_payload_attestation_message(
 
     # PTC attestation must be for a known block. If block is unknown, delay consideration until the block is found
     assert data.beacon_block_root in store.block_states
-    # [Modified in EIP8453]
-    # The upgraded state of a block before the fork has the PTC and domain of
-    # its slot
-    state = get_block_state(store, data.beacon_block_root)
+    state = store.block_states[data.beacon_block_root]
 
     # PTC votes can only change the vote for their assigned beacon block, return early otherwise
-    # [Modified in EIP8453]
-    if data.slot != store.blocks[data.beacon_block_root].slot:
+    if data.slot != state.slot:
         return
 
     # Get all positions of the attester in the PTC
     ptc_indices = []
-    ptc = get_ptc(state, data.slot)
+    # [Modified in EIP8453]
+    # A block before the fork has the Heze PTC
+    if isinstance(state, heze.BeaconState):
+        ptc = heze.get_ptc(state, data.slot)
+    else:
+        ptc = get_ptc(state, data.slot)
     for ptc_index, validator_index in enumerate(ptc):
         if validator_index == ptc_message.validator_index:
             ptc_indices.append(ptc_index)
@@ -2035,16 +2081,16 @@ def on_payload_attestation_message(
         # Check that the attestation is for the current slot
         assert data.slot == get_current_slot(store)
         # Verify the signature
-        assert is_valid_indexed_payload_attestation(
-            state,
-            IndexedPayloadAttestation(
-                attesting_indices=PayloadTimelinessCommitteeIndices(
-                    data=[ptc_message.validator_index]
-                ),
-                data=data,
-                signature=ptc_message.signature,
-            ),
+        indexed_payload_attestation = IndexedPayloadAttestation(
+            attesting_indices=PayloadTimelinessCommitteeIndices(data=[ptc_message.validator_index]),
+            data=data,
+            signature=ptc_message.signature,
         )
+        # [Modified in EIP8453]
+        if isinstance(state, heze.BeaconState):
+            assert heze.is_valid_indexed_payload_attestation(state, indexed_payload_attestation)
+        else:
+            assert is_valid_indexed_payload_attestation(state, indexed_payload_attestation)
 
     # Update the votes for the block
     payload_timeliness_vote = store.payload_timeliness_vote[data.beacon_block_root]
