@@ -352,6 +352,10 @@ def is_strict_ancestor_root(store: Store, root: Root, ancestor: Root) -> bool:
 
 ### New `get_deepest_node`
 
+*Note*: This helper has no root tie-break. Use it to select a node only from a
+chain or a compatible set. Callers comparing conflicting nodes must be
+independent of which tied node is returned, as in `is_compatible`.
+
 ```python
 def get_deepest_node(store: Store, nodes: set[ForkChoiceNode]) -> ForkChoiceNode:
     """
@@ -733,6 +737,8 @@ def get_local_view_from_p2p_messages(
 #### New `get_view_from_blocks`
 
 *Note*: A general function to build AC view from votes included in blocks.
+Clients should cache head-vote committees by slot and dependent root, reusing
+them across block votes while keeping branch-dependent committees separate.
 
 ```python
 def get_view_from_blocks(
@@ -2010,7 +2016,13 @@ def is_ac_vote_ready(store: Store) -> bool:
             continue
         ready = True
         for vote, support in zip(block.body.head_votes, block.body.head_vote_support, strict=True):
-            if vote.data.slot != slot - 1 or not support:
+            if (
+                vote.data.slot != slot - 1
+                or not support
+                or vote.data.slot not in store.head_vote_committees
+                or get_head_vote_committee(get_block_state(store, root), vote.data.slot)
+                != store.head_vote_committees[vote.data.slot]
+            ):
                 continue
             if not is_usable_proposer_support(store, tree, vote.data):
                 ready = False
