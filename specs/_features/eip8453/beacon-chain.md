@@ -14,7 +14,6 @@
   - [New `HeadVoteCommitteeWindow`](#new-headvotecommitteewindow)
   - [New `HeadVoteParticipation`](#new-headvoteparticipation)
   - [New `HeadVoteSupport`](#new-headvotesupport)
-  - [New `HeadVoteSupportBits`](#new-headvotesupportbits)
   - [New `HeadVotes`](#new-headvotes)
   - [New `Height`](#new-height)
   - [New `HeightParticipation`](#new-heightparticipation)
@@ -265,19 +264,10 @@ class HeadVoteParticipation(Vector[HeadVoteCommitteeBits]):
 ### New `HeadVoteSupport`
 
 ```python
-class HeadVoteSupport(ProgressiveList[HeadVoteSupportBits]):
+class HeadVoteSupport(ProgressiveBitList):
     """
-    The support bits of each head vote in a beacon block.
-    """
-```
-
-### New `HeadVoteSupportBits`
-
-```python
-class HeadVoteSupportBits(ProgressiveBitList):
-    """
-    One bit per voter of a head vote, in the order of its ``voter_indices``,
-    set when the proposer counted that voter's vote as support.
+    One bit per head vote in a beacon block, in the order of ``head_votes``,
+    set when the proposer counted that head vote as support.
     """
 ```
 
@@ -1696,7 +1686,8 @@ def process_operations(
     for_ops(body.payload_attestations, process_payload_attestation)
     # [New in EIP8453]
     for vote_index in range(len(body.head_votes)):
-        process_head_vote(state, body.head_votes[vote_index], body.head_vote_support[vote_index])
+        is_supported = bool(body.head_vote_support[vote_index])
+        process_head_vote(state, body.head_votes[vote_index], is_supported)
 ```
 
 ##### Legacy attester slashings
@@ -1772,9 +1763,7 @@ def process_attestation(state: BeaconState, attestation: Attestation) -> None:
 which seats voted for the block of their slot, to weigh builder payments.
 
 ```python
-def process_head_vote(
-    state: BeaconState, vote: HeadVote, support_bits: HeadVoteSupportBits
-) -> None:
+def process_head_vote(state: BeaconState, vote: HeadVote, is_supported: bool) -> None:
     data = vote.data
     assert data.slot + MIN_ATTESTATION_INCLUSION_DELAY <= state.slot
     assert compute_epoch_at_slot(data.slot) in (get_previous_epoch(state), get_current_epoch(state))
@@ -1792,10 +1781,8 @@ def process_head_vote(
     for index in vote.voter_indices:
         assert index in committee
 
-    assert len(support_bits) == len(vote.voter_indices)
-    for is_supported in support_bits:
-        if is_supported:
-            assert data.slot == state.slot - 1
+    if is_supported:
+        assert data.slot == state.slot - 1
 
     # Verify signature
     pubkeys = [state.validators[index].pubkey for index in vote.voter_indices]

@@ -538,7 +538,7 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree):
             voter_indices=spec.HeadVoteCommitteeIndices(data=indices),
         )
     )
-    proposal.body.head_vote_support.append(spec.HeadVoteSupportBits(data=[True] * len(indices)))
+    proposal.body.head_vote_support.append(True)
     store.head_vote_committees[10] = spec.HeadVoteCommittee(
         data=list(range(spec.HEAD_VOTE_COMMITTEE_SIZE))
     )
@@ -689,7 +689,7 @@ def test_responsive_vote_waits_for_support_payload(spec, tree, payload_available
             voter_indices=spec.HeadVoteCommitteeIndices(data=[0]),
         )
     )
-    proposal.body.head_vote_support.append(spec.HeadVoteSupportBits(data=[True]))
+    proposal.body.head_vote_support.append(True)
     store.head_vote_committees[10] = spec.HeadVoteCommittee(
         data=[0] * spec.HEAD_VOTE_COMMITTEE_SIZE
     )

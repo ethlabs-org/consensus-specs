@@ -165,12 +165,6 @@ def verify_block_body_operation_limits(body: BeaconBlockBody) -> None:
         raise GossipReject("head vote support count does not match head vote count")
 
     # [New in EIP8453]
-    # [REJECT] Each head vote has one support bit per voter
-    for index in range(len(body.head_votes)):
-        if len(body.head_vote_support[index]) != len(body.head_votes[index].voter_indices):
-            raise GossipReject("head vote support bits do not match voters")
-
-    # [New in EIP8453]
     # [REJECT] The legacy attester slashing count is within the limit
     if len(body.legacy_attester_slashings) > MAX_ATTESTER_SLASHINGS_ELECTRA:
         raise GossipReject("too many legacy attester slashings")

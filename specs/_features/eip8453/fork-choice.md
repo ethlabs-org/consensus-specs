@@ -680,15 +680,15 @@ def get_view_from_blocks(
     block_slot: Slot,
     vote_slot: Slot,
     block_predicate: Callable[[Root], bool],
-    get_supporting_indices: Callable[[Root, HeadVote, HeadVoteSupportBits], set[int]],
-) -> tuple[list[HeadVote], list[set[int]]]:
+    is_supported: Callable[[Root, HeadVote, bool], bool],
+) -> tuple[list[HeadVote], list[bool]]:
     """
     Return head votes for ``vote_slot`` included in blocks at ``block_slot``
-    that pass ``block_predicate`` and indices of supporting votes
-    obtained via ``get_supporting_indices``.
+    that pass ``block_predicate``, and whether each of them is support
+    as decided by ``is_supported``.
     """
     vote_messages: list[HeadVote] = []
-    support_positions: list[set[int]] = []
+    support: list[bool] = []
 
     for block_root in store.blocks:
         block = store.blocks[block_root]
@@ -699,12 +699,10 @@ def get_view_from_blocks(
                 # Filter by the vote slot
                 if data.slot == vote_slot:
                     vote_messages.append(head_vote)
-                    support_bits = block.body.head_vote_support[vote_index]
-                    support_positions.append(
-                        get_supporting_indices(block_root, head_vote, support_bits)
-                    )
+                    proposer_support = bool(block.body.head_vote_support[vote_index])
+                    support.append(is_supported(block_root, head_vote, proposer_support))
 
-    return vote_messages, support_positions
+    return vote_messages, support
 ```
 
 #### New `get_local_view_from_blocks`
@@ -715,28 +713,23 @@ resolution times.
 ```python
 def get_local_view_from_blocks(
     store: Store, vote_slot: Slot, receipt_threshold_ms: Uint64, resolution_threshold_ms: Uint64
-) -> tuple[list[HeadVote], list[set[int]]]:
+) -> tuple[list[HeadVote], list[bool]]:
     """
     Return votes for ``vote_slot`` indluded in blocks received before ``receipt_threshold_ms``,
-    and indices of those votes that are resolved before ``resolution_threshold_ms``.
+    and whether each of those votes is resolved before ``resolution_threshold_ms``.
     """
 
-    def get_supporting_indices(
-        block_root: Root, head_vote: HeadVote, _support_bits: HeadVoteSupportBits
-    ) -> set[int]:
+    def is_supported(block_root: Root, head_vote: HeadVote, _proposer_support: bool) -> bool:
         data = head_vote.data
         block_receipt_time = store.block_receipt_times[block_root]
         supported_node = ForkChoiceNode(
             root=data.beacon_block_root, payload_status=data.payload_status
         )
-        if (
+        # All voters in this vote support the locally resolved node
+        return (
             get_vote_resolution_time(store, supported_node, data.slot, block_receipt_time)
             < resolution_threshold_ms
-        ):
-            # All voters in this vote support the locally resolved node
-            return {*range(len(head_vote.voter_indices))}
-        else:
-            return set()
+        )
 
     # Restrict to blocks that are from the slot immediately after the vote slot
     return get_view_from_blocks(
@@ -746,7 +739,7 @@ def get_local_view_from_blocks(
         block_predicate=lambda block_root: (
             store.block_receipt_times[block_root] < receipt_threshold_ms
         ),
-        get_supporting_indices=get_supporting_indices,
+        is_supported=is_supported,
     )
 ```
 
@@ -758,19 +751,18 @@ known blocks; *full* block support additionally requires a verified payload.
 ```python
 def get_proposer_view(
     store: Store, block_slot: Slot, vote_slot: Slot
-) -> tuple[list[HeadVote], list[set[int]]]:
+) -> tuple[list[HeadVote], list[bool]]:
     """
     Return the proposer view for ``vote_slot`` from proposals made in ``block_slot``.
     """
 
-    def get_supporting_indices(
-        _block_root: Root, head_vote: HeadVote, support_bits: HeadVoteSupportBits
-    ) -> set[int]:
+    def is_supported(_block_root: Root, head_vote: HeadVote, proposer_support: bool) -> bool:
         data = head_vote.data
-        # Supporting subset must support a locally known block with correct block's slot
+        # Proposer support counts only for a locally known block with correct block's slot
         # and matching payload status
-        if (
-            data.beacon_block_root in store.blocks
+        return (
+            proposer_support
+            and data.beacon_block_root in store.blocks
             and (
                 store.blocks[data.beacon_block_root].slot < vote_slot
                 or data.payload_status == PAYLOAD_STATUS_PENDING
@@ -780,10 +772,7 @@ def get_proposer_view(
                 data.payload_status != PAYLOAD_STATUS_FULL
                 or is_payload_verified(store, data.beacon_block_root)
             )
-        ):
-            return {position for position, is_support in enumerate(support_bits) if is_support}
-        else:
-            return set()
+        )
 
     return get_view_from_blocks(
         store,
@@ -792,7 +781,7 @@ def get_proposer_view(
         block_predicate=lambda block_root: is_ancestor_root(
             store, block_root, store.finalized_checkpoint.root
         ),
-        get_supporting_indices=get_supporting_indices,
+        is_supported=is_supported,
     )
 ```
 
@@ -804,7 +793,7 @@ deduplicating votes and combining their support.
 ```python
 def compute_merged_view(
     votes_from_messages: tuple[list[HeadVoteMessage], list[int]],
-    votes_from_blocks: tuple[list[HeadVote], list[set[int]]],
+    votes_from_blocks: tuple[list[HeadVote], list[bool]],
 ) -> tuple[set[ACVote], set[ACVote]]:
     """
     Return the merged vote set and its supporting subset.
@@ -821,11 +810,11 @@ def compute_merged_view(
 
     # Update sets with block votes
     for vote_index, block_vote in enumerate(votes_from_blocks[0]):
-        support_positions = votes_from_blocks[1][vote_index]
-        for position, voter_index in enumerate(block_vote.voter_indices):
+        is_supported = votes_from_blocks[1][vote_index]
+        for voter_index in block_vote.voter_indices:
             vote = get_ac_vote(voter_index, block_vote.data)
             votes.add(vote)
-            if position in support_positions:
+            if is_supported:
                 support_votes.add(vote)
 
     return votes, support_votes
@@ -1858,7 +1847,7 @@ def is_ac_vote_ready(store: Store) -> bool:
             continue
         ready = True
         for vote, support in zip(block.body.head_votes, block.body.head_vote_support, strict=True):
-            if vote.data.slot != slot - 1 or not any(support):
+            if vote.data.slot != slot - 1 or not support:
                 continue
             node = ForkChoiceNode(
                 root=vote.data.beacon_block_root, payload_status=vote.data.payload_status
