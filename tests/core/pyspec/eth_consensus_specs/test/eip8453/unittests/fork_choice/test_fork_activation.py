@@ -115,13 +115,6 @@ def post_fork_block(spec, store, parent_root, slot):
     return sign_block(spec, upgraded, block, proposer_index=block.proposer_index)
 
 
-def assert_viable_with_anchor_head(spec, store, root):
-    # The new block is in the FG frame; with no head votes yet, the AC head
-    # stays at the activation anchor
-    assert any(node.root == root for node in spec.get_fg_frame(store).tree)
-    assert spec.get_head(store).root == store.finalized_checkpoint.root
-
-
 def test_store_conversion_anchors_at_casper_finality(spec, chain):
     store, heze_store, genesis_block, signed_a, _, _ = chain
     anchor = spec.HeightCheckpoint(height=0, root=heze_store.finalized_checkpoint.root)
@@ -129,10 +122,11 @@ def test_store_conversion_anchors_at_casper_finality(spec, chain):
     assert store.finalized_checkpoint == anchor
     assert store.justified_checkpoint == anchor
     assert store.max_height == 1
-    # The head is not finalized
+    # The unfinalized Heze head is locked and stays the head
     a_root = signed_a.message.hash_tree_root()
     assert a_root != store.finalized_checkpoint.root
-    assert spec.get_head(store).root == anchor.root
+    assert spec.get_head(store).root == a_root
+    assert store.latest_confirmed.root == a_root
     upgraded = spec.get_block_state(store, a_root)
     assert upgraded.target_checkpoint == spec.HeightCheckpoint(height=1, root=a_root)
     assert upgraded.finalized_checkpoint.height == anchor.height
@@ -147,7 +141,7 @@ def test_first_post_fork_block_import(spec, chain):
     assert store.block_states[c_root].target_checkpoint == spec.HeightCheckpoint(
         height=1, root=a_root
     )
-    assert_viable_with_anchor_head(spec, store, c_root)
+    assert spec.get_head(store).root == c_root
 
 
 def test_restart_skips_heze_blocks(spec, chain):
@@ -177,7 +171,10 @@ def test_late_pre_fork_parent_is_imported_with_heze_rules(spec, heze, chain):
     assert store.block_states[c_root].target_checkpoint == spec.HeightCheckpoint(
         height=1, root=b_root
     )
-    assert_viable_with_anchor_head(spec, store, c_root)
+    # The late block has no votes and is not of the current slot, so the head
+    # stays at the locked Heze head, with the new block in the FG frame
+    assert any(node.root == c_root for node in spec.get_fg_frame(store).tree)
+    assert spec.get_head(store).root == signed_a.message.hash_tree_root()
 
 
 def test_block_schema_follows_the_fork_slot(spec, heze, chain):

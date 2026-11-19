@@ -285,6 +285,11 @@ def upgrade_store_to_eip8453(pre: heze.Store) -> Store:
     at the fork.
     """
     finalized_checkpoint = HeightCheckpoint(height=Height(0), root=pre.finalized_checkpoint.root)
+    # The Heze head starts the available chain as a slow lock of the last slot
+    # before the fork
+    heze_head = heze.get_head(pre)
+    anchor = ForkChoiceNode(root=heze_head.root, payload_status=heze_head.payload_status)
+    lock_slot = Slot(compute_start_slot_at_epoch(Epoch(EIP8453_FORK_EPOCH)) - 1)
     return Store(
         time_ms=pre.time_ms,
         genesis_time_ms=pre.genesis_time_ms,
@@ -307,11 +312,13 @@ def upgrade_store_to_eip8453(pre: heze.Store) -> Store:
             root: compute_time_at_slot_ms(pre.genesis_time_ms, pre.blocks[root].slot)
             for root in pre.payloads
         },
-        latest_confirmed=ForkChoiceNode(
-            root=finalized_checkpoint.root, payload_status=PAYLOAD_STATUS_PENDING
-        ),
+        latest_confirmed=anchor,
         saved_confirmations={},
-        locks=set(),
+        locks={
+            ACLock(
+                node=anchor, slot=lock_slot, fast=False, expiry_slot=lock_slot + SLOW_LOCK_WINDOW
+            )
+        },
         head_vote_messages={},
         head_vote_message_receipt_times={},
         head_vote_committees={},
