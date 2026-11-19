@@ -1,0 +1,84 @@
+"""Head votes and their support bits in block processing."""
+
+from importlib import import_module
+
+import pytest
+
+from eth_consensus_specs.test import context
+from eth_consensus_specs.test.helpers.genesis import create_genesis_state
+from eth_consensus_specs.test.helpers.keys import privkeys
+from eth_consensus_specs.utils import bls
+
+
+@pytest.fixture
+def spec(preset, monkeypatch):
+    spec = import_module(f"eth_consensus_specs.eip8453.{context.DEFAULT_TEST_PRESET}")
+    config = {**spec.config._asdict(), "EIP8453_FORK_EPOCH": spec.Epoch(0)}
+    monkeypatch.setattr(spec, "config", spec.config.__class__(**config))
+    return spec
+
+
+@pytest.fixture(autouse=True)
+def active_bls():
+    previous = bls.bls_active
+    bls.bls_active = True
+    yield
+    bls.bls_active = previous
+
+
+@pytest.fixture
+def state(spec):
+    heze = import_module(f"eth_consensus_specs.heze.{context.DEFAULT_TEST_PRESET}")
+    balances = [heze.MAX_EFFECTIVE_BALANCE] * 64
+    pre = create_genesis_state(heze, balances, heze.MAX_EFFECTIVE_BALANCE)
+    state = spec.upgrade_to_eip8453(pre)
+    spec.process_slots(state, spec.Slot(3))
+    return state
+
+
+def signed_vote(spec, state, slot):
+    data = spec.HeadVoteData(
+        slot=slot,
+        beacon_block_root=spec.get_block_root_at_slot(state, spec.Slot(slot)),
+        payload_status=spec.PAYLOAD_STATUS_PENDING,
+    )
+    voters = sorted(set(spec.get_head_vote_committee(state, spec.Slot(slot))))[:2]
+    messages = [
+        spec.HeadVoteMessage(
+            validator_index=index,
+            data=data,
+            signature=spec.get_head_vote_signature(state, data, privkeys[index]),
+        )
+        for index in voters
+    ]
+    return spec.get_aggregate_head_vote(state, messages)
+
+
+@pytest.mark.parametrize(
+    ("slot", "is_supported", "valid"),
+    [(2, True, True), (2, False, True), (1, True, False), (1, False, True)],
+)
+def test_support_requires_previous_slot_vote(spec, state, slot, is_supported, valid):
+    vote = signed_vote(spec, state, slot)
+    if valid:
+        spec.process_head_vote(state, vote, is_supported)
+    else:
+        with pytest.raises(AssertionError):
+            spec.process_head_vote(state, vote, is_supported)
+
+
+@pytest.mark.parametrize(
+    ("support", "valid"),
+    [([False, True], True), ([True, True], False), ([False], False), ([False, True, False], False)],
+)
+def test_operations_check_support_bits(spec, state, support, valid):
+    body = spec.BeaconBlockBody()
+    # A vote of two slots ago followed by a vote of the previous slot
+    body.head_votes.append(signed_vote(spec, state, 1))
+    body.head_votes.append(signed_vote(spec, state, 2))
+    body.head_vote_support = spec.HeadVoteSupport(data=support)
+    if valid:
+        spec.process_operations(state, body)
+    else:
+        with pytest.raises(AssertionError):
+            spec.process_operations(state, body)

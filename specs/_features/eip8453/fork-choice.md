@@ -1790,7 +1790,10 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
 
 *Note*: At the start of a slot, selects the proposal head using received and
 resolved P2P votes from the previous slot. Returns the head, vote messages, and
-supporting message indices.
+supporting message indices. The receipt and resolution thresholds are infinite,
+so whether a vote is support depends only on its data and the store, not on when
+the vote or its block was received. Votes with the same data are all support or
+all not, which is why a block records one support bit per head vote.
 
 ```python
 def get_ac_proposal(

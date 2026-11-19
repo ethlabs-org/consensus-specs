@@ -200,9 +200,11 @@ in its previous slot head-vote view. A counted vote must be of slot
 `block.slot - 1`, for a block in the accepted tree at proposal time whose slot
 is no later than the vote's slot. Otherwise, clear the bit.
 
-*Note*: The voters of an aggregate share its data, so the proposer counts all of
-their votes as support or none of them. A vote for an unknown block may be
-included with its support bit cleared.
+*Note*: The proposer's view resolves support with an infinite resolution
+threshold, so support depends only on the vote data and the store, not on
+receipt times. The voters of an aggregate share its data, so the proposer counts
+all of their votes as support or none of them. A vote for an unknown block may
+be included with its support bit cleared.
 
 *TODO*: Specify aggregate selection when the proposal view exceeds
 `MAX_HEAD_VOTES`, preserving the requirements of view merge.

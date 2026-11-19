@@ -267,7 +267,10 @@ class HeadVoteParticipation(Vector[HeadVoteCommitteeBits]):
 class HeadVoteSupport(ProgressiveBitList):
     """
     One bit per head vote in a beacon block, in the order of ``head_votes``,
-    set when the proposer counted that head vote as support.
+    set when the proposer counted that head vote as support. The proposer
+    resolves support with an infinite resolution threshold, so support depends
+    only on the vote data and the proposer's store and is the same for every
+    voter of a head vote.
     """
 ```
 

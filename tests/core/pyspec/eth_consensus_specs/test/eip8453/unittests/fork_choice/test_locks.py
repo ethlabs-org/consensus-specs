@@ -552,6 +552,67 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree):
     assert store.locks == {replace(original, node=nodes["P"])}
 
 
+def propose_votes(spec, store, nodes, votes):
+    proposal = store.blocks[nodes["B1"].root]
+    proposal.slot = spec.Slot(11)
+    for node, voters, supported in votes:
+        proposal.body.head_votes.append(
+            spec.HeadVote(
+                data=spec.HeadVoteData(
+                    slot=10, beacon_block_root=node.root, payload_status=node.payload_status
+                ),
+                voter_indices=spec.HeadVoteCommitteeIndices(data=voters),
+            )
+        )
+        proposal.body.head_vote_support.append(supported)
+
+
+def merged_voters(spec, view):
+    votes, support = spec.compute_merged_view(([], []), view)
+    return {int(v.validator_index) for v in votes}, {int(v.validator_index) for v in support}
+
+
+def test_proposer_support_needs_known_verified_head(spec, tree):
+    store, nodes = tree
+    unknown = spec.ForkChoiceNode(
+        root=spec.Root(b"\x99" * 32), payload_status=spec.PAYLOAD_STATUS_EMPTY
+    )
+    full = replace(nodes["A"], payload_status=spec.PAYLOAD_STATUS_FULL)
+    propose_votes(
+        spec,
+        store,
+        nodes,
+        [(unknown, [0, 1], True), (full, [2, 3], True), (nodes["B"], [4, 5], True)],
+    )
+    view = spec.get_proposer_view(store, spec.Slot(11), spec.Slot(10))
+    assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {4, 5})
+    # Verifying the payload lets the proposer's support count for the full vote
+    store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
+    view = spec.get_proposer_view(store, spec.Slot(11), spec.Slot(10))
+    assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {2, 3, 4, 5})
+
+
+def test_split_aggregate_unions_voters_and_keeps_set_support(spec, tree):
+    store, nodes = tree
+    propose_votes(
+        spec, store, nodes, [(nodes["B"], [0, 1, 2], True), (nodes["B"], [3, 4, 5], False)]
+    )
+    view = spec.get_proposer_view(store, spec.Slot(11), spec.Slot(10))
+    assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {0, 1, 2})
+
+
+def test_proposer_support_follows_bits_when_both_resolve_locally(spec, tree):
+    store, nodes = tree
+    propose_votes(spec, store, nodes, [(nodes["A"], [0, 1], False), (nodes["B"], [2, 3], True)])
+    proposer_view = spec.get_proposer_view(store, spec.Slot(11), spec.Slot(10))
+    assert proposer_view[1] == [False, True]
+    assert merged_voters(spec, proposer_view) == ({0, 1, 2, 3}, {2, 3})
+    infinite = spec.INFINITE_TIME_MS
+    local_view = spec.get_local_view_from_blocks(store, spec.Slot(10), infinite, infinite)
+    assert local_view[1] == [True, True]
+    assert merged_voters(spec, local_view) == ({0, 1, 2, 3}, {0, 1, 2, 3})
+
+
 @pytest.mark.parametrize("offset", [0, 1])
 def test_restart_waits_for_full_previous_slot(spec, tree, offset):
     store, nodes = tree
