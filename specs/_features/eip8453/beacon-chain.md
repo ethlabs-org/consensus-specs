@@ -136,10 +136,13 @@ is the target of that height. An attestation carries a height pair, which is a
 target vote or a timeout for a height and its target, and an optional finality
 pair, which names a justification that the chain has not yet finalized. A block
 justifies the target of the current height when the target votes for it reach a
-quorum, and the chain then moves to the next height. A quorum of target votes
-and timeouts together also moves the chain to the next height, but only
-`TIMEOUT_DELAY_SLOTS` slots after the target. A pending justification whose
-finality pairs reach a quorum is finalized.
+quorum, unless the previous height is justified and not yet finalized, in which
+case the height waits for its predecessor to be finalized; the chain then moves
+to the next height. A quorum of target votes and timeouts together also moves
+the chain to the next height, but only `TIMEOUT_DELAY_SLOTS` slots after the
+target. A pending justification whose finality pairs reach a quorum is
+finalized, before the same block checks the target quorum. Validators read the
+finality pair from the state in which the chain entered the height.
 
 The AC keeps its own state outside of the beacon state. In every slot, a head
 vote committee of `HEAD_VOTE_COMMITTEE_SIZE` validators, sampled by effective

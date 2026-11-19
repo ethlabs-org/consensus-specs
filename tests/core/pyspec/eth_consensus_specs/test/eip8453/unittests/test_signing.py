@@ -140,3 +140,8 @@ def test_finality_pair_comes_from_entry_state(spec, record):
     entry = entry_state(spec, 5, blocked, pending=[blocked])
     assert spec.get_finality_vote(record, entry) == empty
     assert spec.get_finality_vote(record, entry_state(spec, 1)) == empty
+
+
+def test_entry_state_must_be_at_target_height(spec, record):
+    with pytest.raises(AssertionError):
+        spec.get_finality_attestation_data(record, checkpoint(spec, 2, 1), entry_state(spec, 1))
