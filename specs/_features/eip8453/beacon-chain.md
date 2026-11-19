@@ -1802,12 +1802,14 @@ def process_attestation(state: BeaconState, attestation: Attestation) -> None:
 *Note*: Head votes belong to the available chain. The beacon state records only
 which seats voted for the block of their slot, to weigh builder payments.
 
-*TODO*: `process_head_vote`, and in the fork choice
-`is_valid_head_vote_message`, `get_vote_resolution_time` and the support check
-of `get_proposer_view`, accept a `PAYLOAD_STATUS_PENDING` vote for a block
-earlier than the vote's slot, which `head_vote` gossip rejects. Either require
-`PAYLOAD_STATUS_EMPTY` or `PAYLOAD_STATUS_FULL` for such votes, or document the
-lenience as intended.
+*TODO*: `head_vote` gossip rejects a `PAYLOAD_STATUS_PENDING` vote for a block
+earlier than the vote's slot, and `on_head_vote_message` refuses one when that
+block is known at receipt. Such a vote is still accepted by `process_head_vote`
+in a block, by `is_usable_proposer_support` as proposer support, by
+`is_valid_head_vote_message` for a direct vote received before its block, and by
+`get_vote_resolution_time`, which resolves both block votes and direct votes.
+Either require `PAYLOAD_STATUS_EMPTY` or `PAYLOAD_STATUS_FULL` for such votes in
+these places, or document the remaining lenience as intended.
 
 ```python
 def process_head_vote(state: BeaconState, vote: HeadVote, is_supported: bool) -> None:
