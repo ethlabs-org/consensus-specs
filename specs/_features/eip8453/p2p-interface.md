@@ -569,7 +569,7 @@ def validate_attestation_gossip(
     if data.target.height > Height(1) and data.target.root in store.block_states:
         target_state = store.block_states[data.target.root]
         if (
-            compute_epoch_at_slot(target_state.slot) < EIP8453_FORK_EPOCH
+            isinstance(target_state, heze.BeaconState)
             or target_state.target_checkpoint.root != Root()
             or target_state.target_checkpoint.height != data.target.height
         ):

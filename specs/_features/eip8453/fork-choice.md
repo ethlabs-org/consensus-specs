@@ -14,6 +14,7 @@
   - [New `ACLock`](#new-aclock)
   - [Modified `Store`](#modified-store)
   - [Modified `get_forkchoice_store`](#modified-get_forkchoice_store)
+  - [New `upgrade_store_to_eip8453`](#new-upgrade_store_to_eip8453)
   - [New `is_ac_joined`](#new-is_ac_joined)
   - [New `on_ac_restart`](#new-on_ac_restart)
   - [New `get_head_vote_due_ms`](#new-get_head_vote_due_ms)
@@ -24,6 +25,8 @@
   - [New `get_deepest_node`](#new-get_deepest_node)
   - [New `is_compatible`](#new-is_compatible)
   - [New `get_subtree`](#new-get_subtree)
+  - [Modified `get_parent_payload_status`](#modified-get_parent_payload_status)
+  - [Modified `is_parent_node_full`](#modified-is_parent_node_full)
   - [New `get_upgraded_state`](#new-get_upgraded_state)
   - [New `get_block_state`](#new-get_block_state)
   - [New `get_block_pre_state`](#new-get_block_pre_state)
@@ -83,6 +86,7 @@
   - [Modified `on_tick`](#modified-on_tick)
   - [Modified `on_block`](#modified-on_block)
   - [Modified `on_execution_payload_envelope`](#modified-on_execution_payload_envelope)
+  - [Modified `on_payload_attestation_message`](#modified-on_payload_attestation_message)
   - [New `on_head_vote_message`](#new-on_head_vote_message)
 - [Internal API](#internal-api)
   - [New `get_ac_proposal`](#new-get_ac_proposal)
@@ -102,12 +106,13 @@ This document specifies the fork choice store and handlers accompanying the
 [EIP-8453 upgrade](./beacon-chain.md), building on
 [Heze](../../heze/fork-choice.md).
 
-At the fork, the store keeps the blocks and post-states it holds. The
-post-states of blocks before the fork stay Heze states, and blocks before the
-fork are imported with the Heze `on_block`. EIP-8453 fork choice reads every
-stored state through `get_block_state`, which upgrades a Heze state with
+At the fork, a node converts its Heze store with `upgrade_store_to_eip8453`. The
+store keeps the blocks and post-states it holds, and the post-states of blocks
+before the fork stay Heze states. EIP-8453 fork choice reads every stored state
+through `get_block_state`, which upgrades a Heze state with
 `get_upgraded_state`. `on_block` applies the first block after the fork to the
-upgraded parent state.
+upgraded parent state, and imports a block from before the fork that arrives
+late with the Heze state transition.
 
 ## Constants
 
@@ -171,8 +176,10 @@ class Store:
     proposer_boost_root: Root
     # [Modified in EIP8453]
     # Removed `equivocating_indices`
-    blocks: dict[Root, BeaconBlock]
-    block_states: dict[Root, BeaconState]
+    # [Modified in EIP8453]
+    # Blocks before the fork keep their Heze blocks and post-states
+    blocks: dict[Root, BeaconBlock | heze.BeaconBlock]
+    block_states: dict[Root, BeaconState | heze.BeaconState]
     # [Modified in EIP8453]
     # Removed `block_timeliness`
     # [Modified in EIP8453]
@@ -261,6 +268,55 @@ def get_forkchoice_store(
     )
 ```
 
+### New `upgrade_store_to_eip8453`
+
+*Note*: The finality gadget starts at height 0 from the last finalized Casper
+FFG checkpoint, as in `upgrade_to_eip8453`, so the store's justified and
+finalized checkpoints are that block at height 0. Every block before the fork is
+the target of height 1 on its own branch. Blocks before the fork count as
+received at the start of their slot. The AC starts with no locks, confirmations
+or head votes.
+
+```python
+def upgrade_store_to_eip8453(pre: heze.Store) -> Store:
+    """
+    Return the EIP-8453 fork choice store converted from the Heze store ``pre``
+    at the fork.
+    """
+    finalized_checkpoint = HeightCheckpoint(height=Height(0), root=pre.finalized_checkpoint.root)
+    return Store(
+        time_ms=pre.time_ms,
+        genesis_time_ms=pre.genesis_time_ms,
+        justified_checkpoint=finalized_checkpoint,
+        finalized_checkpoint=finalized_checkpoint,
+        proposer_boost_root=Root(),
+        blocks=dict(pre.blocks),
+        block_states=dict(pre.block_states),
+        latest_messages={},
+        payloads=dict(pre.payloads),
+        payload_timeliness_vote=dict(pre.payload_timeliness_vote),
+        payload_data_availability_vote=dict(pre.payload_data_availability_vote),
+        payload_inclusion_list_satisfaction=dict(pre.payload_inclusion_list_satisfaction),
+        max_height=Height(1),
+        block_receipt_times={
+            root: compute_time_at_slot_ms(pre.genesis_time_ms, block.slot)
+            for root, block in pre.blocks.items()
+        },
+        payload_receipt_times={
+            root: compute_time_at_slot_ms(pre.genesis_time_ms, pre.blocks[root].slot)
+            for root in pre.payloads
+        },
+        latest_confirmed=ForkChoiceNode(
+            root=finalized_checkpoint.root, payload_status=PAYLOAD_STATUS_PENDING
+        ),
+        saved_confirmations={},
+        locks=set(),
+        head_vote_messages={},
+        head_vote_message_receipt_times={},
+        head_vote_committees={},
+    )
+```
+
 ### New `is_ac_joined`
 
 ```python
@@ -302,7 +358,11 @@ def on_ac_restart(store: Store, time_ms: Uint64) -> None:
     store.payload_receipt_times = dict.fromkeys(store.payloads, time_ms)
     for root in sorted(store.blocks, key=lambda root: (store.blocks[root].slot, root)):
         store.block_receipt_times[root] = time_ms
-        for vote in store.blocks[root].body.head_votes:
+        block = store.blocks[root]
+        # Blocks before the EIP-8453 fork carry no head votes
+        if isinstance(block, heze.BeaconBlock):
+            continue
+        for vote in block.body.head_votes:
             record_head_vote_committee(store, get_block_state(store, root), vote.data)
 ```
 
@@ -398,11 +458,37 @@ def get_subtree(store: Store, subtree_root: ForkChoiceNode) -> Sequence[ForkChoi
     return subtree
 ```
 
+### Modified `get_parent_payload_status`
+
+```python
+def get_parent_payload_status(
+    store: Store,
+    # [Modified in EIP8453]
+    block: BeaconBlock | heze.BeaconBlock,
+) -> PayloadStatus:
+    parent = store.blocks[block.parent_root]
+    parent_block_hash = block.body.signed_execution_payload_bid.message.parent_block_hash
+    message_block_hash = parent.body.signed_execution_payload_bid.message.block_hash
+    return PAYLOAD_STATUS_FULL if parent_block_hash == message_block_hash else PAYLOAD_STATUS_EMPTY
+```
+
+### Modified `is_parent_node_full`
+
+```python
+def is_parent_node_full(
+    store: Store,
+    # [Modified in EIP8453]
+    block: BeaconBlock | heze.BeaconBlock,
+) -> bool:
+    return get_parent_payload_status(store, block) == PAYLOAD_STATUS_FULL
+```
+
 ### New `get_upgraded_state`
 
 *Note*: The upgrade replays the slots from the state's slot to the fork, up to
-an epoch near the fork. Implementations should cache the upgraded state of each
-stored block.
+an epoch near the fork. Readers such as `is_fg_contest` upgrade every stored
+block before the fork on each call, so implementations should cache the upgraded
+state of each stored block.
 
 ```python
 def get_upgraded_state(state: heze.BeaconState | BeaconState) -> BeaconState:
@@ -759,6 +845,9 @@ def get_view_from_blocks(
     for block_root in store.blocks:
         block = store.blocks[block_root]
         # Filter by block slot and block test predicate
+        # (blocks before the EIP-8453 fork carry no head votes)
+        if isinstance(block, heze.BeaconBlock):
+            continue
         if block.slot == block_slot and block_predicate(block_root):
             for vote_index, head_vote in enumerate(block.body.head_votes):
                 data = head_vote.data
@@ -1781,7 +1870,7 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
 gadget, record block receipt time and store head vote committees.
 
 ```python
-def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
+def on_block(store: Store, signed_block: SignedBeaconBlock | heze.SignedBeaconBlock) -> None:
     """
     Run ``on_block`` upon receiving a new block.
     """
@@ -1807,6 +1896,23 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
     # [Modified in EIP8453]
     # Run finalized check over the parent to avoid circular dependency.
     assert is_ancestor_root(store, block.parent_root, store.finalized_checkpoint.root)
+
+    # [New in EIP8453]
+    # A block from before the fork that arrives late is processed with the Heze
+    # state transition, and its Heze post-state is stored like those of the
+    # blocks before the fork
+    if isinstance(signed_block, heze.SignedBeaconBlock):
+        heze_state = store.block_states[block.parent_root].copy()
+        assert isinstance(heze_state, heze.BeaconState)
+        heze.state_transition(heze_state, signed_block, validate_result=True)
+        store.blocks[block_root] = signed_block.message
+        store.block_states[block_root] = heze_state
+        store.payload_timeliness_vote[block_root] = [None] * PTC_SIZE
+        store.payload_data_availability_vote[block_root] = [None] * PTC_SIZE
+        record_block_receipt_time(store, block_root)
+        return
+
+    block = signed_block.message
 
     # [Modified in EIP8453]
     # Make a copy of the parent's state, upgraded at the EIP-8453 fork
@@ -1867,7 +1973,12 @@ def on_execution_payload_envelope(
     state = store.block_states[envelope.beacon_block_root]
 
     # Verify the execution payload envelope
-    verify_execution_payload_envelope(state, signed_envelope, EXECUTION_ENGINE)
+    # [Modified in EIP8453]
+    # The payload of a block before the fork is verified with the Heze rules
+    if isinstance(state, heze.BeaconState):
+        heze.verify_execution_payload_envelope(state, signed_envelope, heze.EXECUTION_ENGINE)
+    else:
+        verify_execution_payload_envelope(state, signed_envelope, EXECUTION_ENGINE)
 
     # Check if this payload satisfies the inclusion list constraints
     # If not, add this payload to the store as inclusion list constraints unsatisfied
@@ -1883,6 +1994,64 @@ def on_execution_payload_envelope(
     store.payloads[envelope.beacon_block_root] = envelope
     update_optimistic_confirmation(store)
     get_ac_vote_head(store)
+```
+
+### Modified `on_payload_attestation_message`
+
+```python
+def on_payload_attestation_message(
+    store: Store, ptc_message: PayloadAttestationMessage, is_from_block: bool = False
+) -> None:
+    """
+    Run ``on_payload_attestation_message`` upon receiving a new payload attestation message
+    from either within a block or directly on the wire.
+    """
+    data = ptc_message.data
+
+    # PTC attestation must be for a known block. If block is unknown, delay consideration until the block is found
+    assert data.beacon_block_root in store.block_states
+    # [Modified in EIP8453]
+    # The upgraded state of a block before the fork has the PTC and domain of
+    # its slot
+    state = get_block_state(store, data.beacon_block_root)
+
+    # PTC votes can only change the vote for their assigned beacon block, return early otherwise
+    # [Modified in EIP8453]
+    if data.slot != store.blocks[data.beacon_block_root].slot:
+        return
+
+    # Get all positions of the attester in the PTC
+    ptc_indices = []
+    ptc = get_ptc(state, data.slot)
+    for ptc_index, validator_index in enumerate(ptc):
+        if validator_index == ptc_message.validator_index:
+            ptc_indices.append(ptc_index)
+
+    # Check that the attester is from the PTC
+    assert len(ptc_indices) > 0
+
+    # Verify the signature and check that its for the current slot if it is coming from the wire
+    if not is_from_block:
+        # Check that the attestation is for the current slot
+        assert data.slot == get_current_slot(store)
+        # Verify the signature
+        assert is_valid_indexed_payload_attestation(
+            state,
+            IndexedPayloadAttestation(
+                attesting_indices=PayloadTimelinessCommitteeIndices(
+                    data=[ptc_message.validator_index]
+                ),
+                data=data,
+                signature=ptc_message.signature,
+            ),
+        )
+
+    # Update the votes for the block
+    payload_timeliness_vote = store.payload_timeliness_vote[data.beacon_block_root]
+    payload_data_availability_vote = store.payload_data_availability_vote[data.beacon_block_root]
+    for ptc_index in ptc_indices:
+        payload_timeliness_vote[ptc_index] = data.payload_present
+        payload_data_availability_vote[ptc_index] = data.blob_data_available
 ```
 
 ### New `on_head_vote_message`
@@ -2013,6 +2182,9 @@ def is_ac_vote_ready(store: Store) -> bool:
     for root, block in store.blocks.items():
         proposal = ForkChoiceNode(root=root, payload_status=PAYLOAD_STATUS_PENDING)
         if block.slot != slot or block.proposer_index != proposer_index or proposal not in tree:
+            continue
+        # Blocks before the EIP-8453 fork carry no head votes
+        if isinstance(block, heze.BeaconBlock):
             continue
         ready = True
         for vote, support in zip(block.body.head_votes, block.body.head_vote_support, strict=True):

@@ -1,4 +1,4 @@
-"""Fork choice, gossip and import across the EIP-8453 fork."""
+"""Fork choice, gossip and import across the EIP-8453 fork, from a real Heze store."""
 
 from dataclasses import fields
 from importlib import import_module
@@ -8,12 +8,23 @@ import pytest
 
 from eth_consensus_specs.test import context
 from eth_consensus_specs.test.helpers import constants
-from eth_consensus_specs.test.helpers.block import build_empty_block, sign_block
+from eth_consensus_specs.test.helpers.block import (
+    build_empty_block,
+    build_empty_block_for_next_slot,
+    sign_block,
+)
+from eth_consensus_specs.test.helpers.fork_choice import get_genesis_forkchoice_store_and_block
 from eth_consensus_specs.test.helpers.genesis import create_genesis_state
 from eth_consensus_specs.test.helpers.keys import privkeys
+from eth_consensus_specs.test.helpers.state import state_transition_and_sign_block
 from eth_consensus_specs.utils import bls
 
 FORK_EPOCH = 1
+
+
+@pytest.fixture
+def heze():
+    return import_module(f"eth_consensus_specs.heze.{context.DEFAULT_TEST_PRESET}")
 
 
 @pytest.fixture
@@ -35,56 +46,33 @@ def active_bls():
     bls.bls_active = previous
 
 
+def slot_time(spec, slot):
+    return spec.compute_time_at_slot_ms(spec.Uint64(0), spec.Slot(slot))
+
+
 @pytest.fixture
-def heze_store(spec):
+def chain(spec, heze):
     """
-    A store at the fork slot whose head is the last Heze block, stored with its
-    Heze post-state, as the Heze fork choice left it.
+    A real Heze store with blocks at slots 1 (imported) and 2 (held back), at
+    the fork slot, converted with ``upgrade_store_to_eip8453``.
     """
-    heze = import_module(f"eth_consensus_specs.heze.{context.DEFAULT_TEST_PRESET}")
     genesis_state = create_genesis_state(
         heze, [heze.MAX_EFFECTIVE_BALANCE] * 64, heze.MAX_EFFECTIVE_BALANCE
     )
-    genesis_block = heze.BeaconBlock(slot=0)
-    # The last Heze block, at slot 1, on top of the finalized genesis block (root 0)
-    heze_block = heze.BeaconBlock(slot=1, parent_root=heze.Root())
-    heze_state = genesis_state.copy()
-    heze_state.slot = heze.Slot(1)
-    heze_state.latest_block_header = heze.BeaconBlockHeader(
-        slot=1, parent_root=heze.Root(), body_root=heze_block.body.hash_tree_root()
+    heze_store, genesis_block = get_genesis_forkchoice_store_and_block(heze, genesis_state)
+    state = genesis_state.copy()
+    signed_a = state_transition_and_sign_block(
+        heze, state, build_empty_block_for_next_slot(heze, state)
     )
-    heze_block.state_root = heze_state.hash_tree_root()
-    heze_root = heze_block.hash_tree_root()
+    signed_b = state_transition_and_sign_block(
+        heze, state, build_empty_block_for_next_slot(heze, state)
+    )
+    heze.on_tick(heze_store, slot_time(heze, 1))
+    heze.on_block(heze_store, signed_a)
     fork_slot = spec.compute_start_slot_at_epoch(spec.Epoch(FORK_EPOCH))
-    # The store is anchored at the last Heze block, the target of height 1
-    anchor = spec.HeightCheckpoint(height=1, root=heze_root)
-    blocks = {spec.Root(): genesis_block, heze_root: heze_block}
-    store = spec.Store(
-        time_ms=spec.compute_time_at_slot_ms(spec.Uint64(0), fork_slot),
-        genesis_time_ms=spec.Uint64(0),
-        justified_checkpoint=anchor,
-        finalized_checkpoint=anchor,
-        proposer_boost_root=spec.Root(),
-        blocks=blocks,
-        block_states={spec.Root(): genesis_state, heze_root: heze_state},
-        latest_messages={},
-        payloads={},
-        payload_timeliness_vote={root: [None] * spec.PTC_SIZE for root in blocks},
-        payload_data_availability_vote={root: [None] * spec.PTC_SIZE for root in blocks},
-        payload_inclusion_list_satisfaction=dict.fromkeys(blocks, True),
-        max_height=spec.Height(1),
-        block_receipt_times=dict.fromkeys(blocks, spec.Uint64(0)),
-        payload_receipt_times={},
-        latest_confirmed=spec.ForkChoiceNode(
-            root=heze_root, payload_status=spec.PAYLOAD_STATUS_PENDING
-        ),
-        saved_confirmations={},
-        locks=set(),
-        head_vote_messages={},
-        head_vote_message_receipt_times={},
-        head_vote_committees={},
-    )
-    return store, heze_root, fork_slot
+    heze.on_tick(heze_store, slot_time(heze, fork_slot))
+    store = spec.upgrade_store_to_eip8453(heze_store)
+    return store, heze_store, genesis_block, signed_a, signed_b, fork_slot
 
 
 def make_seen(spec):
@@ -93,58 +81,95 @@ def make_seen(spec):
     )
 
 
-def first_post_fork_block(spec, store, heze_root, fork_slot):
-    upgraded = spec.get_block_state(store, heze_root)
-    block = build_empty_block(spec, upgraded, fork_slot)
-    assert block.parent_root == heze_root
+def post_fork_block(spec, store, parent_root, slot):
+    upgraded = spec.get_block_state(store, parent_root)
+    block = build_empty_block(spec, upgraded, slot)
+    assert block.parent_root == parent_root
     post = upgraded.copy()
+    if post.slot < slot:
+        spec.process_slots(post, slot)
     spec.process_block(post, block)
     block.state_root = post.hash_tree_root()
     return sign_block(spec, upgraded, block, proposer_index=block.proposer_index)
 
 
-def test_head_selection_reads_a_stored_heze_state(spec, heze_store):
-    store, heze_root, _ = heze_store
-    assert spec.get_head(store).root == heze_root
+def assert_viable_with_anchor_head(spec, store, root):
+    # The new block is in the FG frame; with no head votes yet, the AC head
+    # stays at the activation anchor
+    assert any(node.root == root for node in spec.get_fg_frame(store).tree)
+    assert spec.get_head(store).root == store.finalized_checkpoint.root
 
 
-def test_first_post_fork_block_gossip_and_import(spec, heze_store):
-    store, heze_root, fork_slot = heze_store
-    signed = first_post_fork_block(spec, store, heze_root, fork_slot)
-    seen = make_seen(spec)
-    spec.validate_beacon_block_gossip(seen, store, signed, store.time_ms)
-    assert (signed.message.slot, signed.message.proposer_index) in seen.proposer_slots
+def test_store_conversion_anchors_at_casper_finality(spec, chain):
+    store, heze_store, genesis_block, signed_a, _, _ = chain
+    anchor = spec.HeightCheckpoint(height=0, root=heze_store.finalized_checkpoint.root)
+    assert anchor.root == genesis_block.hash_tree_root()
+    assert store.finalized_checkpoint == anchor
+    assert store.justified_checkpoint == anchor
+    assert store.max_height == 1
+    # The head is not finalized
+    a_root = signed_a.message.hash_tree_root()
+    assert a_root != store.finalized_checkpoint.root
+    assert spec.get_head(store).root == anchor.root
+    upgraded = spec.get_block_state(store, a_root)
+    assert upgraded.target_checkpoint == spec.HeightCheckpoint(height=1, root=a_root)
+    assert upgraded.finalized_checkpoint.height == anchor.height
 
-    spec.on_block(store, signed)
-    root = signed.message.hash_tree_root()
-    post = store.block_states[root]
-    assert post.target_checkpoint == spec.HeightCheckpoint(height=1, root=heze_root)
-    assert spec.get_head(store).root in (root, heze_root)
+
+def test_first_post_fork_block_import(spec, chain):
+    store, _, _, signed_a, _, fork_slot = chain
+    a_root = signed_a.message.hash_tree_root()
+    signed_c = post_fork_block(spec, store, a_root, fork_slot)
+    spec.on_block(store, signed_c)
+    c_root = signed_c.message.hash_tree_root()
+    assert store.block_states[c_root].target_checkpoint == spec.HeightCheckpoint(
+        height=1, root=a_root
+    )
+    assert_viable_with_anchor_head(spec, store, c_root)
 
 
-def test_pre_fork_block_is_ignored_on_gossip(spec, heze_store):
-    store, heze_root, fork_slot = heze_store
-    signed = first_post_fork_block(spec, store, heze_root, fork_slot)
+def test_restart_skips_heze_blocks(spec, chain):
+    store, _, _, signed_a, _, _ = chain
+    spec.on_ac_restart(store, store.time_ms)
+    assert store.block_receipt_times[signed_a.message.hash_tree_root()] == store.time_ms
+
+
+def test_late_pre_fork_parent_is_imported_with_heze_rules(spec, heze, chain):
+    store, _, _, _, signed_b, fork_slot = chain
+    b_root = signed_b.message.hash_tree_root()
+    spec.on_block(store, signed_b)
+    assert isinstance(store.block_states[b_root], heze.BeaconState)
+    signed_c = post_fork_block(spec, store, b_root, fork_slot)
+    spec.on_block(store, signed_c)
+    c_root = signed_c.message.hash_tree_root()
+    assert store.block_states[c_root].target_checkpoint == spec.HeightCheckpoint(
+        height=1, root=b_root
+    )
+    assert_viable_with_anchor_head(spec, store, c_root)
+
+
+def test_pre_fork_block_is_ignored_on_gossip(spec, chain):
+    store, _, _, signed_a, _, fork_slot = chain
+    signed = post_fork_block(spec, store, signed_a.message.hash_tree_root(), fork_slot)
     signed.message.slot = fork_slot - 1
     with pytest.raises(spec.GossipIgnore, match="before the eip8453 fork"):
         spec.validate_beacon_block_gossip(make_seen(spec), store, signed, store.time_ms)
 
 
-def test_head_vote_with_heze_head(spec, heze_store):
-    store, heze_root, fork_slot = heze_store
-    upgraded = spec.get_block_state(store, heze_root)
+def test_head_vote_with_heze_head(spec, chain):
+    store, _, _, signed_a, _, fork_slot = chain
+    a_root = signed_a.message.hash_tree_root()
+    upgraded = spec.get_block_state(store, a_root)
     validator = spec.get_head_vote_committee(upgraded, fork_slot)[0]
     data = spec.HeadVoteData(
-        slot=fork_slot, beacon_block_root=heze_root, payload_status=spec.PAYLOAD_STATUS_EMPTY
+        slot=fork_slot, beacon_block_root=a_root, payload_status=spec.PAYLOAD_STATUS_EMPTY
     )
     message = spec.HeadVoteMessage(
         validator_index=validator,
         data=data,
         signature=spec.get_head_vote_signature(upgraded, data, privkeys[validator]),
     )
-    statuses = (
-        {heze_root: spec.PAYLOAD_VALIDATION_STATUS_VALID}
-        if hasattr(spec, "PAYLOAD_VALIDATION_STATUS_VALID")
-        else {}
-    )
-    spec.validate_head_vote_gossip(make_seen(spec), store, message, store.time_ms, statuses)
+    # The pulled-up Heze head state is read without error; the genesis Casper
+    # finalized root (zero in the state) then stops the vote
+    with pytest.raises(spec.GossipIgnore, match="finalized block is not an ancestor"):
+        spec.validate_head_vote_gossip(make_seen(spec), store, message, store.time_ms, {})

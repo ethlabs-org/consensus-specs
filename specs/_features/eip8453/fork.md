@@ -52,9 +52,12 @@ The fork is triggered at epoch `EIP8453_FORK_EPOCH`.
 
 ### Upgrading the fork choice store
 
-The fork choice store is not rebuilt at the fork. It keeps its blocks and their
-post-states, and the post-states of blocks before the fork stay Heze states.
-EIP-8453 fork choice, gossip and duties read stored states through
+At the fork, a node converts its Heze fork choice store with
+[`upgrade_store_to_eip8453`](./fork-choice.md#new-upgrade_store_to_eip8453). Its
+justified and finalized checkpoints become the last finalized Casper FFG
+checkpoint at height 0, matching the upgraded state. It keeps its blocks and
+their post-states, and the post-states of blocks before the fork stay Heze
+states. EIP-8453 fork choice, gossip and duties read stored states through
 [`get_block_state`](./fork-choice.md#new-get_block_state), which upgrades a Heze
 state with `get_upgraded_state`.
 
