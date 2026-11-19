@@ -140,6 +140,8 @@ def upgrade_to_eip8453(pre: heze.BeaconState) -> BeaconState:
         payload_expected_withdrawals=pre.payload_expected_withdrawals,
         ptc_window=pre.ptc_window,
         # [New in EIP8453]
+        previous_target_checkpoint=HeightCheckpoint.empty(),
+        # [New in EIP8453]
         target_checkpoint=HeightCheckpoint(
             height=Height(1),
             root=hash_tree_root(pre.latest_block_header),
@@ -154,6 +156,8 @@ def upgrade_to_eip8453(pre: heze.BeaconState) -> BeaconState:
             height=Height(0),
             root=pre.finalized_checkpoint.root,
         ),
+        # [New in EIP8453]
+        previous_target_slot=Slot(0),
         # [New in EIP8453]
         target_slot=pre.latest_block_header.slot,
         # [New in EIP8453]
@@ -170,10 +174,6 @@ def upgrade_to_eip8453(pre: heze.BeaconState) -> BeaconState:
         head_vote_participation=HeadVoteParticipation(),
         # [New in EIP8453]
         head_vote_committee_window=HeadVoteCommitteeWindow(),
-        # [New in EIP8453]
-        previous_target_checkpoint=HeightCheckpoint.empty(),
-        # [New in EIP8453]
-        previous_target_slot=Slot(0),
     )
 
     # [New in EIP8453]

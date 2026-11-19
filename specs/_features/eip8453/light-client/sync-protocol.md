@@ -50,7 +50,7 @@ Existing `GeneralizedIndex` constants are frozen at their pre-EIP-8453 values.
 
 | Name                            | Value                                                                          |
 | ------------------------------- | ------------------------------------------------------------------------------ |
-| `FINALIZED_ROOT_GINDEX_EIP8453` | `get_generalized_index(BeaconState, "finalized_checkpoint", "root")` (= 5,943) |
+| `FINALIZED_ROOT_GINDEX_EIP8453` | `get_generalized_index(BeaconState, "finalized_checkpoint", "root")` (= 5,945) |
 
 ## Helpers
 

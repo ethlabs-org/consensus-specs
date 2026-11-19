@@ -219,7 +219,10 @@ verification conditions in
 [`process_attestation`](./beacon-chain.md#modified-process_attestation),
 including its committee encoding and signature. Only attestations for the
 current or the previous target of `state` are valid. An attestation for the
-previous target adds only pending-finality participation.
+previous target adds only pending-finality participation and pays the proposer
+nothing; a proposer should include such aggregates when places are left after
+the aggregates that add target, progress or pending-finality participation for
+the current target.
 
 A proposer should prefer aggregates that add target, progress or
 pending-finality participation.
@@ -613,5 +616,5 @@ The validator broadcasts the aggregate for block inclusion.
 broadcast deadlines.
 
 *Note*: A block can include an FG aggregate only while its target is the current
-target of the inclusion state. Its encoding stays valid for that whole time,
-since the committees depend only on the epoch of the target.
+or the previous target of the inclusion state. Its encoding stays valid for that
+whole time, since the committees depend only on the epoch of the target.

@@ -30,7 +30,7 @@ def get_upgraded_state(state: heze.BeaconState | BeaconState) -> BeaconState:
     @classmethod
     def hardcoded_ssz_dep_constants(cls) -> dict[str, str]:
         return {
-            "FINALIZED_ROOT_GINDEX_EIP8453": "GeneralizedIndex(5943)",
+            "FINALIZED_ROOT_GINDEX_EIP8453": "GeneralizedIndex(5945)",
         }
 
     @classmethod
