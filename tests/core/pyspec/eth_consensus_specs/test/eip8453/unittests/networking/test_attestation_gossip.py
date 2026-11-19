@@ -27,6 +27,15 @@ def active_bls():
     bls.bls_active = previous
 
 
+def set_fork_epoch(spec, monkeypatch, epoch):
+    monkeypatch.setattr(spec, "config", spec.config._replace(EIP8453_FORK_EPOCH=spec.Epoch(epoch)))
+
+
+@pytest.fixture(autouse=True)
+def fork_at_genesis(spec, monkeypatch):
+    set_fork_epoch(spec, monkeypatch, 0)
+
+
 @pytest.fixture
 def state(spec):
     heze = import_module(f"eth_consensus_specs.heze.{context.DEFAULT_TEST_PRESET}")
@@ -164,6 +173,7 @@ def test_target_height_must_match_target_block(spec, state, monkeypatch):
 
 
 def test_target_block_that_opened_no_height_is_rejected(spec, state, monkeypatch):
+    state.target_checkpoint.height = spec.Height(2)
     head = spec.Root(b"\x01" * 32)
     store = make_store(spec, head, state)
     # The target block's own state has a filled-in target, so it opened no height
@@ -201,3 +211,69 @@ def test_stale_row_does_not_take_the_round(spec, state, monkeypatch):
         spec, monkeypatch, store, sign(spec, state, current_data(spec, state)), head, seen=seen
     )
     assert len(seen.attestation_validator_rounds) == 1
+
+
+@pytest.fixture
+def fork_transition(spec, monkeypatch):
+    # The fork activates at epoch 1; the genesis block is the last Heze block
+    set_fork_epoch(spec, monkeypatch, 1)
+    heze = import_module(f"eth_consensus_specs.heze.{context.DEFAULT_TEST_PRESET}")
+    balances = [heze.MAX_EFFECTIVE_BALANCE] * 64
+    heze_state = create_genesis_state(heze, balances, heze.MAX_EFFECTIVE_BALANCE)
+    fork_slot = spec.compute_start_slot_at_epoch(spec.Epoch(1))
+    pre = heze_state.copy()
+    heze.process_slots(pre, fork_slot)
+    heze_root = pre.latest_block_header.hash_tree_root()
+    upgraded = spec.upgrade_to_eip8453(pre)
+    assert upgraded.target_checkpoint == spec.HeightCheckpoint(height=1, root=heze_root)
+    return heze_state, heze_root, upgraded, fork_slot
+
+
+def add_block(spec, store, root, slot, block_state):
+    store.blocks[root] = spec.BeaconBlock(slot=slot)
+    store.block_states[root] = block_state
+
+
+def test_height_one_with_pre_fork_head_is_accepted(spec, monkeypatch, fork_transition):
+    heze_state, heze_root, upgraded, fork_slot = fork_transition
+    store = make_store(spec, heze_root, heze_state)
+    store.blocks[heze_root] = spec.BeaconBlock(slot=heze_state.slot)
+    data = current_data(spec, upgraded)
+    slot = fork_slot + 2 * spec.SLOTS_PER_ROUND
+    seen = validate(spec, monkeypatch, store, sign(spec, upgraded, data), heze_root, slot=slot)
+    assert len(seen.attestation_validator_rounds) == 1
+
+
+def test_height_one_with_post_fork_head(spec, monkeypatch, fork_transition):
+    heze_state, heze_root, upgraded, fork_slot = fork_transition
+    head_state = upgraded.copy()
+    spec.process_slots(head_state, fork_slot + 1)
+    head = spec.Root(b"\x05" * 32)
+    store = make_store(spec, head, head_state)
+    add_block(spec, store, heze_root, heze_state.slot, heze_state)
+    slot = fork_slot + 2 * spec.SLOTS_PER_ROUND
+    data = current_data(spec, head_state)
+    validate(spec, monkeypatch, store, sign(spec, head_state, data), head, slot=slot)
+    # A pre-fork block is the target of height 1 only
+    data.target.height = spec.Height(2)
+    with pytest.raises(spec.GossipReject, match="did not open the target height"):
+        validate(spec, monkeypatch, store, sign(spec, head_state, data), head, slot=slot)
+
+
+def test_pre_fork_duty_is_ignored(spec, monkeypatch, fork_transition):
+    _, _, upgraded, fork_slot = fork_transition
+    head_state = upgraded.copy()
+    spec.process_slots(head_state, fork_slot + 1)
+    head = spec.Root(b"\x05" * 32)
+    store = make_store(spec, head, head_state)
+    round = spec.compute_round_at_slot(fork_slot)
+    committee_index = next(
+        index
+        for index in range(spec.ATTESTATION_COMMITTEES_PER_ROUND)
+        if spec.compute_attestation_committee_slot(round, index) > fork_slot
+    )
+    attestation = sign(
+        spec, head_state, current_data(spec, head_state), committee_index=committee_index
+    )
+    with pytest.raises(spec.GossipIgnore, match="no slot of the attestation committee"):
+        validate(spec, monkeypatch, store, attestation, head, slot=fork_slot)
