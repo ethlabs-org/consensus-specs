@@ -61,7 +61,6 @@ def tree(spec):
         max_height=spec.Height(0),
         block_receipt_times=dict.fromkeys(blocks, spec.Uint64(0)),
         payload_receipt_times={},
-        fast_confirmed_path=set(),
         latest_confirmed=spec.ForkChoiceNode(
             root=nodes["F"].root, payload_status=spec.PAYLOAD_STATUS_PENDING
         ),
@@ -191,7 +190,6 @@ def test_veto_records_candidate_and_locks_shared_ancestor(spec, tree, monkeypatc
     spec.update_confirmation(store, spec.Slot(10))
     assert store.saved_confirmations[10] == nodes["B"]
     assert store.latest_confirmed == nodes["A"]
-    assert store.fast_confirmed_path == set()
     assert store.locks == {
         existing,
         lock(spec, nodes["P"], slot=10, fast=True, expiry=14),
@@ -219,13 +217,11 @@ def test_missing_candidate_breaks_slow_streak(spec, tree, missing):
 def test_no_candidate_clears_saved_slot(spec, tree):
     store, nodes = tree
     store.saved_confirmations[10] = nodes["A"]
-    store.fast_confirmed_path = {nodes["A"]}
     store.head_vote_committees[10] = spec.HeadVoteCommittee(
         data=list(range(spec.HEAD_VOTE_COMMITTEE_SIZE))
     )
     spec.update_confirmation(store, spec.Slot(10))
     assert 10 not in store.saved_confirmations
-    assert not store.fast_confirmed_path
 
 
 def test_expiry_at_slot_start(spec, tree):
@@ -586,6 +582,30 @@ def test_restart_waits_for_full_previous_slot(spec, tree, offset):
     assert not store.locks
 
 
+@pytest.mark.parametrize(
+    ("age", "fast", "expiry", "expected"),
+    [
+        (2, True, 13, "A"),
+        (3, True, 40, None),
+        (1, False, 40, None),
+        (1, True, 10, None),
+    ],
+)
+def test_fg_source_requires_recent_live_fast_lock(spec, tree, age, fast, expiry, expected):
+    store, nodes = tree
+    store.locks = {lock(spec, nodes["A"], slot=11 - age, fast=fast, expiry=expiry)}
+    spec.update_confirmation(store, spec.Slot(10))
+    assert spec.get_ac_frame(store)[0] == (nodes[expected] if expected else None)
+
+
+def test_fg_source_uses_viable_lock_ancestor(spec, tree):
+    store, nodes = tree
+    store.locks = {lock(spec, nodes["A1"], slot=10)}
+    store.max_height = spec.Height(2)
+    store.block_states[nodes["B1"].root].target_checkpoint.height = spec.Height(2)
+    assert spec.get_ac_frame(store)[0] == nodes["P"]
+
+
 def test_slow_lock_does_not_require_fast_threshold(spec, tree):
     store, nodes = tree
     store.saved_confirmations = dict.fromkeys(range(10, 41), nodes["A"])
@@ -593,4 +613,3 @@ def test_slow_lock_does_not_require_fast_threshold(spec, tree):
     vote(spec, store, nodes["A"], 0, slot=41)
     spec.update_confirmation(store, spec.Slot(41))
     assert store.locks == {lock(spec, nodes["A"], slot=41, fast=False, expiry=73)}
-    assert not store.fast_confirmed_path

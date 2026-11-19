@@ -58,8 +58,8 @@
     - [New `get_voter_subtree`](#new-get_voter_subtree)
     - [New `compute_confirmation_score`](#new-compute_confirmation_score)
     - [New `get_confirmed_head`](#new-get_confirmed_head)
-    - [New `compute_confirmed_path_and_lock`](#new-compute_confirmed_path_and_lock)
-    - [New `compute_fast_path_and_lock`](#new-compute_fast_path_and_lock)
+    - [New `compute_confirmed_lock`](#new-compute_confirmed_lock)
+    - [New `compute_fast_lock`](#new-compute_fast_lock)
     - [New `compute_slow_lock`](#new-compute_slow_lock)
   - [Store mutators](#store-mutators)
     - [New `update_finality`](#new-update_finality)
@@ -175,7 +175,6 @@ class Store:
     max_height: Height
     block_receipt_times: dict[Root, Uint64]
     payload_receipt_times: dict[Root, Uint64]
-    fast_confirmed_path: set[ForkChoiceNode]
     latest_confirmed: ForkChoiceNode
     saved_confirmations: dict[Slot, ForkChoiceNode]
     locks: set[ACLock]
@@ -234,7 +233,6 @@ def get_forkchoice_store(
         max_height=anchor_height,
         block_receipt_times={anchor_root: time_ms},
         payload_receipt_times={},
-        fast_confirmed_path=set(),
         latest_confirmed=ForkChoiceNode(
             root=finalized_checkpoint.root, payload_status=PAYLOAD_STATUS_PENDING
         ),
@@ -280,7 +278,6 @@ def on_ac_restart(store: Store, time_ms: Uint64) -> None:
     store.restart_time_ms = time_ms
     store.prepared_head_vote = None
     store.saved_confirmations = {}
-    store.fast_confirmed_path = set()
     store.head_vote_messages = {}
     store.head_vote_message_receipt_times = {}
     store.head_vote_committees = {}
@@ -1202,21 +1199,21 @@ def get_confirmed_head(
         return None
 ```
 
-#### New `compute_confirmed_path_and_lock`
+#### New `compute_confirmed_lock`
 
 *Note*: Computes the confirmed path and the lock as the deepest node in the
 confirmed path. Candidate nodes are selected from the FG frame, excluding
 genesis and nodes that conflict with a live lock.
 
 ```python
-def compute_confirmed_path_and_lock(
+def compute_confirmed_lock(
     store: Store,
     fg_frame: FGFrame,
     confirmed: ForkChoiceNode,
     test_predicate: Callable[[ForkChoiceNode], bool],
-) -> tuple[set[ForkChoiceNode], ForkChoiceNode | None]:
+) -> ForkChoiceNode | None:
     """
-    Return the selected path nodes and their deepest node, or an empty set and ``None``.
+    Return the deepest selected path node, or ``None``.
     """
     path = {
         node
@@ -1227,34 +1224,28 @@ def compute_confirmed_path_and_lock(
         and test_predicate(node)
     }
 
-    if len(path) == 0:
-        return set(), None
-
-    # The deepest node passing the test
-    lock = get_deepest_node(store, path)
-
-    return path, lock
+    return get_deepest_node(store, path) if len(path) > 0 else None
 ```
 
-#### New `compute_fast_path_and_lock`
+#### New `compute_fast_lock`
 
 *Note*: Selects non-genesis nodes on the path to `confirmed` within the FG frame
 whose confirmation support accounts for at least half of all committee seats.
 The deepest selected node is the fast lock.
 
 ```python
-def compute_fast_path_and_lock(
+def compute_fast_lock(
     store: Store,
     fg_frame: FGFrame,
     votes: set[ACVote],
     support_votes: set[ACVote],
     slot: Slot,
     confirmed: ForkChoiceNode,
-) -> tuple[set[ForkChoiceNode], ForkChoiceNode | None]:
+) -> ForkChoiceNode | None:
     """
-    Return the fast-confirmed path and lock, or an empty set and ``None``.
+    Return the fast lock, or ``None``.
     """
-    return compute_confirmed_path_and_lock(
+    return compute_confirmed_lock(
         store=store,
         fg_frame=fg_frame,
         confirmed=confirmed,
@@ -1293,7 +1284,7 @@ def compute_slow_lock(
     ):
         return None
 
-    _, slow_lock = compute_confirmed_path_and_lock(
+    slow_lock = compute_confirmed_lock(
         store=store,
         fg_frame=fg_frame,
         confirmed=confirmed,
@@ -1376,7 +1367,6 @@ def update_locks_and_confirmation(
     slot: Slot,
     fg_frame: FGFrame,
     confirmed: ForkChoiceNode,
-    fast_confirmed_path: set[ForkChoiceNode],
     fast_lock: ForkChoiceNode | None,
     slow_lock: ForkChoiceNode | None,
 ) -> None:
@@ -1385,9 +1375,6 @@ def update_locks_and_confirmation(
     """
     store.saved_confirmations[slot] = confirmed
     vetoed = conflicts_with_lock(store, fg_frame, confirmed)
-
-    # A veto still clears the fast-confirmed path used for FG source selection.
-    store.fast_confirmed_path = set() if vetoed else fast_confirmed_path
 
     locks = set()
     if fast_lock is not None:
@@ -1487,8 +1474,6 @@ def record_head_vote_message(store: Store, state: BeaconState, message: HeadVote
   candidate.
 - Adds separate fast and slow locks on qualifying ancestors that conflict with
   no live lock, even when the candidate itself is vetoed.
-- Clears the fast-confirmed path when no candidate exists or a live lock vetoes
-  it.
 
 ```python
 def update_confirmation(store: Store, slot: Slot) -> None:
@@ -1504,10 +1489,9 @@ def update_confirmation(store: Store, slot: Slot) -> None:
     # Return if there is no confirmation
     if confirmed is None:
         store.saved_confirmations.pop(slot, None)
-        store.fast_confirmed_path = set()
         return
 
-    fast_confirmed_path, fast_lock = compute_fast_path_and_lock(
+    fast_lock = compute_fast_lock(
         store=store,
         fg_frame=fg_frame,
         votes=votes,
@@ -1523,7 +1507,6 @@ def update_confirmation(store: Store, slot: Slot) -> None:
         slot,
         fg_frame,
         confirmed,
-        fast_confirmed_path,
         fast_lock,
         slow_lock,
     )
@@ -1872,8 +1855,9 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
 *Notes*: At or after the support cutoff, returns the FG confirmation node and
 the head selected using the current slot's local vote view.
 
-The FG confirmation node is the deepest node in both the fast-confirmed path and
-the full viable subtree, or `None` if no such node exists.
+For a joined node, the FG confirmation node is the deepest viable effective live
+fast-lock node whose confirmation slot is at least the current slot minus two,
+or `None` if no such node exists. Slow locks do not provide FG sources.
 
 The AC frame is used by validators to cast FG attestations.
 
@@ -1901,11 +1885,14 @@ def get_ac_frame(store: Store) -> tuple[ForkChoiceNode | None, ForkChoiceNode]:
     if not is_ac_joined(store):
         return None, head
 
-    # The deepest viable node from the fast confirmed path
     viable_subtree = get_viable_subtree(store, fg_frame, fg_frame.tree)
-    fast_confirmed_viable_nodes = store.fast_confirmed_path & set(viable_subtree)
-    if len(fast_confirmed_viable_nodes) > 0:
-        fg_confirmed = get_deepest_node(store, fast_confirmed_viable_nodes)
+    candidates = {
+        lock.node
+        for lock in get_live_locks(store, fg_frame, store.time_ms)
+        if lock.fast and current_slot <= lock.slot + 2 and lock.node in viable_subtree
+    }
+    if len(candidates) > 0:
+        fg_confirmed = get_deepest_node(store, candidates)
         return fg_confirmed, head
     else:
         return None, head
