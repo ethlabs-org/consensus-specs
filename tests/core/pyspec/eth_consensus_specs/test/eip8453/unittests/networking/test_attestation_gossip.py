@@ -175,15 +175,13 @@ def test_target_block_that_opened_no_height_is_rejected(spec, state, monkeypatch
 def test_first_round_before_committee_slot_is_ignored(spec, state, monkeypatch):
     head = spec.Root(b"\x01" * 32)
     store = make_store(spec, head, state)
-    attester = next(
+    committee_index = next(
         index
-        for index in range(len(state.validators))
-        if spec.compute_attestation_committee_slot(
-            spec.GENESIS_ROUND, index % spec.ATTESTATION_COMMITTEES_PER_ROUND
-        )
-        > spec.GENESIS_SLOT
+        for index in range(spec.ATTESTATION_COMMITTEES_PER_ROUND)
+        if spec.compute_attestation_committee_slot(spec.GENESIS_ROUND, index) > spec.GENESIS_SLOT
     )
-    attestation = sign(spec, state, current_data(spec, state), attester=attester)
+    # Timing is checked before signer membership, independently of registry size.
+    attestation = sign(spec, state, current_data(spec, state), committee_index=committee_index)
     with pytest.raises(spec.GossipIgnore, match="no slot of the attestation committee"):
         validate(spec, monkeypatch, store, attestation, head, slot=spec.GENESIS_SLOT)
 
