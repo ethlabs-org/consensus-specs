@@ -139,6 +139,41 @@ def test_head_vote_status_uses_canonical_slot_evidence(spec, state, root_kind, s
             spec.process_head_vote(state, aggregate, is_supported=True)
 
 
+@pytest.mark.parametrize("canonical", [False, True])
+@pytest.mark.parametrize("status", [0, 1, 2])
+def test_genesis_vote_status_and_participation_require_canonical_root(
+    spec, state, canonical, status
+):
+    root = spec.get_block_root_at_slot(state, spec.GENESIS_SLOT)
+    if not canonical:
+        root = spec.Root(b"\xff" * 32)
+    data = spec.HeadVoteData(slot=0, beacon_block_root=root, payload_status=status)
+    index = spec.get_head_vote_committee(state, spec.GENESIS_SLOT)[0]
+    message = spec.HeadVoteMessage(
+        validator_index=index,
+        data=data,
+        signature=spec.get_head_vote_signature(state, data, privkeys[index]),
+    )
+    valid = not canonical or status == spec.PAYLOAD_STATUS_PENDING
+    assert spec.is_valid_head_vote_message(state, message) == valid
+    aggregate = spec.HeadVote(
+        data=data,
+        voter_indices=spec.HeadVoteCommitteeIndices(data=[index]),
+        signature=message.signature,
+    )
+    if valid:
+        spec.process_head_vote(state, aggregate, is_supported=False)
+    else:
+        with pytest.raises(AssertionError):
+            spec.process_head_vote(state, aggregate, is_supported=False)
+    for slot, bits in enumerate(state.head_vote_participation):
+        expected = [False] * spec.HEAD_VOTE_COMMITTEE_SIZE
+        if canonical and valid and slot == spec.SLOTS_PER_EPOCH:
+            committee = spec.get_head_vote_committee(state, spec.GENESIS_SLOT)
+            expected = [member == index for member in committee]
+        assert [bool(bit) for bit in bits] == expected
+
+
 @pytest.mark.parametrize(
     ("support", "valid"),
     [([False, True], True), ([True, True], False), ([False], False), ([False, True, False], False)],
