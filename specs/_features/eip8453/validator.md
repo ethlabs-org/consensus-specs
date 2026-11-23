@@ -277,8 +277,10 @@ def get_head_vote_signature(state: BeaconState, data: HeadVoteData, privkey: int
     return bls.Sign(privkey, signing_root)
 ```
 
-The validator must record the selected root before signing and must not sign
-another head for the same slot.
+Before signing, the validator must durably record the head-vote signing root for
+its validator key and slot, independently of fork-choice state. Selection and
+recording must be serialized per validator key. It must not sign a different
+signing root for that slot.
 
 #### Broadcast head vote
 
@@ -425,7 +427,8 @@ def record_finality_attestation(record: FinalitySigningRecord, data: Attestation
 
 Selecting and recording the data must be serialized per validator key. The
 record and selected data must be persisted before signing. See
-[Protection best practices](#protection-best-practices) for interrupted duties.
+[Protection best practices](../../phase0/validator.md#protection-best-practices)
+for interrupted duties.
 
 #### Construct attestation
 
