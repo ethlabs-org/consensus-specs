@@ -9,6 +9,8 @@ class EIP8453SpecBuilder(BaseSpecBuilder):
     @classmethod
     def imports(cls, preset_name: str):
         return f"""
+from typing import cast
+
 from eth_consensus_specs.heze import {preset_name} as heze
 """
 
