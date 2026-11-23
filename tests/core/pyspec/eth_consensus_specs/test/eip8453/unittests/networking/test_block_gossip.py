@@ -27,7 +27,8 @@ def active_bls():
     bls.bls_active = previous
 
 
-def test_proposer_signature_uses_parent_branch_registry(spec, monkeypatch):
+@pytest.mark.parametrize("aligned", [True, False])
+def test_proposer_signature_uses_parent_branch_registry(spec, monkeypatch, aligned):
     heze = import_module(f"eth_consensus_specs.heze.{context.DEFAULT_TEST_PRESET}")
     balances = [heze.MAX_EFFECTIVE_BALANCE] * 64
     parent_state = spec.upgrade_to_eip8453(
@@ -44,6 +45,9 @@ def test_proposer_signature_uses_parent_branch_registry(spec, monkeypatch):
     spec.process_slots(advanced, spec.Slot(2))
     proposer = spec.get_beacon_proposer_index(advanced)
     block = spec.BeaconBlock(slot=2, proposer_index=proposer, parent_root=parent_root)
+    block.body.head_vote_declarations.append(spec.HeadVoteDeclaration(validator_index=1234))
+    if aligned:
+        block.body.head_vote_support_bits.append(True)
     bid = block.body.signed_execution_payload_bid.message
     bid.parent_block_root = parent_root
     bid.parent_block_hash = advanced.latest_block_hash
@@ -95,5 +99,9 @@ def test_proposer_signature_uses_parent_branch_registry(spec, monkeypatch):
         **{field.name: (get_origin(field.type) or field.type)() for field in fields(spec.Seen)}
     )
     time_ms = spec.compute_time_at_slot_ms(spec.Uint64(0), spec.Slot(2))
+    if not aligned:
+        with pytest.raises(spec.GossipReject, match="invalid head vote declarations"):
+            spec.validate_beacon_block_gossip(seen, store, signed, time_ms)
+        return
     spec.validate_beacon_block_gossip(seen, store, signed, time_ms)
     assert (block.slot, proposer) in seen.proposer_slots

@@ -1,4 +1,4 @@
-"""Head votes and their support bits in block processing."""
+"""Signed payment votes and unsigned head vote declarations."""
 
 from importlib import import_module
 
@@ -54,29 +54,15 @@ def signed_vote(spec, state, slot, payload_status=None):
     return spec.get_aggregate_head_vote(state, messages)
 
 
-@pytest.mark.parametrize(
-    ("slot", "is_supported", "valid"),
-    [(2, True, True), (2, False, True), (1, True, False), (1, False, True)],
-)
-def test_support_requires_previous_slot_vote(spec, state, slot, is_supported, valid):
-    vote = signed_vote(spec, state, slot)
-    if valid:
-        spec.process_head_vote(state, vote, is_supported)
-    else:
-        with pytest.raises(AssertionError):
-            spec.process_head_vote(state, vote, is_supported)
-
-
-@pytest.mark.parametrize("is_supported", [False, True])
-def test_same_slot_vote_records_participation(spec, state, is_supported):
+def test_same_slot_vote_records_participation(spec, state):
     # Give slot 2 its own block so that its votes are for the block of their slot
     state.block_roots[2 % spec.SLOTS_PER_HISTORICAL_ROOT] = spec.Root(b"\x22" * 32)
     earlier = signed_vote(spec, state, 1)
-    spec.process_head_vote(state, earlier, is_supported=False)
+    spec.process_head_vote(state, earlier)
     assert not any(any(bits) for bits in state.head_vote_participation)
 
     vote = signed_vote(spec, state, 2, spec.PAYLOAD_STATUS_PENDING)
-    spec.process_head_vote(state, vote, is_supported)
+    spec.process_head_vote(state, vote)
     committee = spec.get_head_vote_committee(state, spec.Slot(2))
     expected = [index in vote.voter_indices for index in committee]
     for index, bits in enumerate(state.head_vote_participation):
@@ -101,10 +87,10 @@ def test_same_slot_vote_must_be_pending(spec, state, status, valid):
     state.block_roots[2 % spec.SLOTS_PER_HISTORICAL_ROOT] = spec.Root(b"\x22" * 32)
     vote = signed_vote(spec, state, 2, getattr(spec, status))
     if valid:
-        spec.process_head_vote(state, vote, is_supported=True)
+        spec.process_head_vote(state, vote)
     else:
         with pytest.raises(AssertionError):
-            spec.process_head_vote(state, vote, is_supported=True)
+            spec.process_head_vote(state, vote)
 
 
 @pytest.mark.parametrize("root_kind", ["older", "same_slot", "sibling"])
@@ -133,10 +119,10 @@ def test_head_vote_status_uses_canonical_slot_evidence(spec, state, root_kind, s
         signature=message.signature,
     )
     if valid:
-        spec.process_head_vote(state, aggregate, is_supported=True)
+        spec.process_head_vote(state, aggregate)
     else:
         with pytest.raises(AssertionError):
-            spec.process_head_vote(state, aggregate, is_supported=True)
+            spec.process_head_vote(state, aggregate)
 
 
 @pytest.mark.parametrize("canonical", [False, True])
@@ -162,10 +148,10 @@ def test_genesis_vote_status_and_participation_require_canonical_root(
         signature=message.signature,
     )
     if valid:
-        spec.process_head_vote(state, aggregate, is_supported=False)
+        spec.process_head_vote(state, aggregate)
     else:
         with pytest.raises(AssertionError):
-            spec.process_head_vote(state, aggregate, is_supported=False)
+            spec.process_head_vote(state, aggregate)
     for slot, bits in enumerate(state.head_vote_participation):
         expected = [False] * spec.HEAD_VOTE_COMMITTEE_SIZE
         if canonical and valid and slot == spec.SLOTS_PER_EPOCH:
@@ -189,17 +175,70 @@ def test_genesis_payload_status_at_history_expiry(spec, state, expired, status):
 
 
 @pytest.mark.parametrize(
-    ("support", "valid"),
-    [([False, True], True), ([True, True], False), ([False], False), ([False, True, False], False)],
+    ("heads", "support", "valid"),
+    [
+        ([1, 2], [False, True], True),
+        ([1, 1], [False, True], False),
+        ([1, 2], [True], False),
+        ([1, 2, 3], [False] * 3, False),
+    ],
 )
-def test_operations_check_support_bits(spec, state, support, valid):
+def test_operations_check_declarations(spec, state, heads, support, valid):
     body = spec.BeaconBlockBody()
-    # A vote of two slots ago followed by a vote of the previous slot
-    body.head_votes.append(signed_vote(spec, state, 1))
-    body.head_votes.append(signed_vote(spec, state, 2))
-    body.head_vote_support = spec.HeadVoteSupport(data=support)
+    for head in heads:
+        body.head_vote_declarations.append(
+            spec.HeadVoteDeclaration(
+                validator_index=1234, beacon_block_root=spec.Root(bytes([head]) * 32)
+            )
+        )
+    body.head_vote_support_bits = spec.HeadVoteSupportBits(data=support)
     if valid:
         spec.process_operations(state, body)
+        assert not any(any(bits) for bits in state.head_vote_participation)
     else:
         with pytest.raises(AssertionError):
             spec.process_operations(state, body)
+
+
+def test_last_eligible_block_credits_previous_epoch_once(spec, state):
+    state.block_roots[2] = spec.Root(b"\x22" * 32)
+    # Two validators hold the whole committee so their aggregate reaches quorum.
+    state.head_vote_committee_window[spec.SLOTS_PER_EPOCH + 2] = spec.HeadVoteCommittee(
+        data=[0, 1] * (spec.HEAD_VOTE_COMMITTEE_SIZE // 2)
+    )
+    withdrawal = spec.BuilderPendingWithdrawal(amount=1)
+    state.builder_pending_payments[spec.SLOTS_PER_EPOCH + 2].withdrawal = withdrawal
+    vote = signed_vote(spec, state, 2, spec.PAYLOAD_STATUS_PENDING)
+    expected = [i in vote.voter_indices for i in spec.get_head_vote_committee(state, 2)]
+    spec.process_slots(state, spec.Slot(2 * spec.SLOTS_PER_EPOCH - 1))
+    assert not state.builder_pending_withdrawals
+    spec.process_head_vote(state, vote)
+    assert [bool(bit) for bit in state.head_vote_participation[2]] == expected
+    before = state.hash_tree_root()
+    spec.process_head_vote(state, vote)
+    assert state.hash_tree_root() == before
+    spec.process_slots(state, spec.Slot(2 * spec.SLOTS_PER_EPOCH))
+    assert list(state.builder_pending_withdrawals) == [withdrawal]
+    with pytest.raises(AssertionError):
+        spec.process_head_vote(state, vote)
+
+
+def test_declaration_slot_and_full_pool_bound(spec, state, monkeypatch):
+    monkeypatch.setattr(spec, "config", spec.config._replace(EIP8453_FORK_EPOCH=1))
+    state.slot = spec.Slot(spec.SLOTS_PER_EPOCH)
+    body = spec.BeaconBlockBody()
+    spec.process_operations(state, body)
+    for index in range(spec.HEAD_VOTE_COMMITTEE_SIZE):
+        for status in (spec.PAYLOAD_STATUS_EMPTY, spec.PAYLOAD_STATUS_FULL):
+            body.head_vote_declarations.append(
+                spec.HeadVoteDeclaration(validator_index=index, payload_status=status)
+            )
+            body.head_vote_support_bits.append(False)
+    with pytest.raises(AssertionError):
+        spec.process_operations(state, body)
+    state.slot += 1
+    spec.process_operations(state, body)
+    body.head_vote_declarations.append(spec.HeadVoteDeclaration(validator_index=index + 1))
+    body.head_vote_support_bits.append(False)
+    with pytest.raises(AssertionError):
+        spec.process_operations(state, body)
