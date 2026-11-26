@@ -152,6 +152,7 @@
     - [New `get_attestation_epoch`](#new-get_attestation_epoch)
     - [New `get_aggregate_participants`](#new-get_aggregate_participants)
     - [New `get_ac_snapshot_cycle_length`](#new-get_ac_snapshot_cycle_length)
+    - [New `is_last_ac_snapshot_dynasty`](#new-is_last_ac_snapshot_dynasty)
     - [New `compute_ac_seat_indices`](#new-compute_ac_seat_indices)
     - [New `compute_ac_ticket_weight`](#new-compute_ac_ticket_weight)
     - [New `get_head_vote_weight`](#new-get_head_vote_weight)
@@ -230,7 +231,7 @@
       - [New `advance_dynasty`](#new-advance_dynasty)
       - [New `compute_ac_next_snapshot_index`](#new-compute_ac_next_snapshot_index)
       - [New `update_ac_snapshots`](#new-update_ac_snapshots)
-      - [New `advance_dynasty_if_ready`](#new-advance_dynasty_if_ready)
+      - [New `is_dynasty_ready_to_advance`](#new-is_dynasty_ready_to_advance)
       - [New `advance_height`](#new-advance_height)
 
 <!-- mdformat-toc end -->
@@ -2360,6 +2361,14 @@ def get_ac_snapshot_cycle_length() -> Uint64:
     return HEAD_VOTE_COMMITTEE_SIZE // rate
 ```
 
+#### New `is_last_ac_snapshot_dynasty`
+
+```python
+def is_last_ac_snapshot_dynasty(dynasty: Dynasty) -> bool:
+    cycle_length = get_ac_snapshot_cycle_length()
+    return dynasty % cycle_length == cycle_length - 1
+```
+
 #### New `compute_ac_seat_indices`
 
 For dynasty `d` and cycle length `C`, the caller supplies snapshots numbered
@@ -2918,8 +2927,7 @@ known when the weights are fixed.
 
 ```python
 def process_ac_snapshot_updates(state: BeaconState) -> None:
-    cycle_length = get_ac_snapshot_cycle_length()
-    if state.dynasty == 0 or state.dynasty % cycle_length != cycle_length - 1:
+    if state.dynasty == 0 or not is_last_ac_snapshot_dynasty(state.dynasty):
         return
     epoch = get_current_epoch(state)
     snapshot = state.ac_snapshots[compute_ac_next_snapshot_index(state.dynasty)]
@@ -4146,27 +4154,21 @@ def update_ac_snapshots(state: BeaconState) -> None:
     )
 ```
 
-##### New `advance_dynasty_if_ready`
+##### New `is_dynasty_ready_to_advance`
 
 Rollover requires a finalized block from after the next descriptor's seal.
 Heights can advance while the last dynasty waits for that block.
 
 ```python
-def advance_dynasty_if_ready(state: BeaconState) -> None:
+def is_dynasty_ready_to_advance(state: BeaconState) -> bool:
     # A finalized block at or after the entry slot belongs to this dynasty.
     if state.finalized_checkpoint.height == 0 or state.finalized_slot < state.dynasty_start_slot:
-        return
+        return False
 
-    cycle_length = get_ac_snapshot_cycle_length()
-    position = state.dynasty % cycle_length
-    if position == cycle_length - 1 and state.dynasty > 0:
+    if state.dynasty > 0 and is_last_ac_snapshot_dynasty(state.dynasty):
         snapshot = state.ac_snapshots[compute_ac_next_snapshot_index(state.dynasty)]
-        if compute_epoch_at_slot(state.finalized_slot) <= snapshot.seed_epoch:
-            return
-
-    advance_dynasty(state)
-    if state.dynasty % cycle_length == cycle_length - 1:
-        update_ac_snapshots(state)
+        return compute_epoch_at_slot(state.finalized_slot) > snapshot.seed_epoch
+    return True
 ```
 
 ##### New `advance_height`
@@ -4186,5 +4188,8 @@ def advance_height(state: BeaconState) -> None:
         data=[Boolean(False)] * len(state.validators)
     )
 
-    advance_dynasty_if_ready(state)
+    if is_dynasty_ready_to_advance(state):
+        advance_dynasty(state)
+        if is_last_ac_snapshot_dynasty(state.dynasty):
+            update_ac_snapshots(state)
 ```
