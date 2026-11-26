@@ -228,8 +228,9 @@
       - [New `is_previous_height_justified`](#new-is_previous_height_justified)
       - [New `process_height_events`](#new-process_height_events)
       - [New `advance_dynasty`](#new-advance_dynasty)
-      - [New `get_ac_capture_index`](#new-get_ac_capture_index)
+      - [New `compute_ac_next_snapshot_index`](#new-compute_ac_next_snapshot_index)
       - [New `update_ac_snapshots`](#new-update_ac_snapshots)
+      - [New `advance_dynasty_if_ready`](#new-advance_dynasty_if_ready)
       - [New `advance_height`](#new-advance_height)
 
 <!-- mdformat-toc end -->
@@ -2921,7 +2922,7 @@ def process_ac_snapshot_updates(state: BeaconState) -> None:
     if state.dynasty == 0 or (cycle_length > 1 and state.dynasty % cycle_length == 0):
         return
     epoch = get_current_epoch(state)
-    snapshot = state.ac_snapshots[get_ac_capture_index(state.dynasty)]
+    snapshot = state.ac_snapshots[compute_ac_next_snapshot_index(state.dynasty)]
     if epoch == snapshot.seed_epoch:
         snapshot.seed = get_randao_mix(state, snapshot.seed_epoch)
 ```
@@ -4113,10 +4114,12 @@ def advance_dynasty(state: BeaconState) -> None:
     state.dynasty_start_slot = state.slot
 ```
 
-##### New `get_ac_capture_index`
+##### New `compute_ac_next_snapshot_index`
+
+The ring entry that will become active at the next rollover.
 
 ```python
-def get_ac_capture_index(dynasty: Dynasty) -> Uint64:
+def compute_ac_next_snapshot_index(dynasty: Dynasty) -> Uint64:
     cycle_length = get_ac_snapshot_cycle_length()
     cycle_index = Uint64(dynasty // cycle_length) % 3
     offset = 1 if cycle_length == 1 else 2
@@ -4138,12 +4141,12 @@ descendants of the capture block.
 def update_ac_snapshots(state: BeaconState) -> None:
     epoch = get_current_epoch(state)
     snapshots = state.ac_snapshots
-    snapshots[get_ac_capture_index(state.dynasty)] = ACSnapshot(
+    snapshots[compute_ac_next_snapshot_index(state.dynasty)] = ACSnapshot(
         weights=get_ac_weights(state, epoch), seed=Bytes32(), seed_epoch=epoch + 1
     )
 ```
 
-##### New `advance_height`
+##### New `advance_dynasty_if_ready`
 
 Rollover requires a finalized block from after the next descriptor's seal. With
 the default rate, this is already guaranteed: at least two slots per dynasty
@@ -4151,6 +4154,26 @@ leave `2 * (C - 2)` slots from capture to the last dynasty of a cycle of length
 `C`, more than the two epochs sealing can take on either preset. With faster
 cycles, a height can advance while the dynasty waits for the seal and its
 finalization.
+
+```python
+def advance_dynasty_if_ready(state: BeaconState) -> None:
+    # A finalized block at or after the entry slot belongs to this dynasty.
+    if state.finalized_checkpoint.height == 0 or state.finalized_slot < state.dynasty_start_slot:
+        return
+
+    cycle_length = get_ac_snapshot_cycle_length()
+    position = state.dynasty % cycle_length
+    if position == cycle_length - 1 and state.dynasty > 0:
+        snapshot = state.ac_snapshots[compute_ac_next_snapshot_index(state.dynasty)]
+        if compute_epoch_at_slot(state.finalized_slot) <= snapshot.seed_epoch:
+            return
+
+    advance_dynasty(state)
+    if position == 0:
+        update_ac_snapshots(state)
+```
+
+##### New `advance_height`
 
 ```python
 def advance_height(state: BeaconState) -> None:
@@ -4167,15 +4190,5 @@ def advance_height(state: BeaconState) -> None:
         data=[Boolean(False)] * len(state.validators)
     )
 
-    # A finalized block at or after the entry slot belongs to this dynasty.
-    if state.finalized_checkpoint.height > 0 and state.finalized_slot >= state.dynasty_start_slot:
-        cycle_length = get_ac_snapshot_cycle_length()
-        phase = state.dynasty % cycle_length
-        if phase == cycle_length - 1 and state.dynasty > 0:
-            snapshot = state.ac_snapshots[get_ac_capture_index(state.dynasty)]
-            if compute_epoch_at_slot(state.finalized_slot) <= snapshot.seed_epoch:
-                return
-        advance_dynasty(state)
-        if cycle_length == 1 or state.dynasty % cycle_length == 1:
-            update_ac_snapshots(state)
+    advance_dynasty_if_ready(state)
 ```
