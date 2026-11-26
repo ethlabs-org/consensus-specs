@@ -279,11 +279,12 @@ def test_head_vote_with_heze_head(spec, chain):
     store, _, _, signed_a, _, fork_slot = chain
     a_root = signed_a.message.hash_tree_root()
     upgraded = spec.get_block_state(store, a_root)
+    tally_state = spec.get_block_state(store, store.finalized_checkpoint.root)
     validator, opening = next(
         (index, proof)
-        for index in range(len(upgraded.validators))
+        for index in range(len(tally_state.validators))
         if spec.get_head_vote_weight(
-            upgraded,
+            tally_state,
             fork_slot,
             spec.ValidatorIndex(index),
             proof := spec.VRFProof(data=get_vrf_proof(index, fork_slot)),

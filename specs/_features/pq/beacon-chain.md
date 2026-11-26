@@ -153,6 +153,7 @@
     - [New `get_aggregate_participants`](#new-get_aggregate_participants)
     - [New `get_ac_snapshot_cycle_length`](#new-get_ac_snapshot_cycle_length)
     - [New `compute_ac_seat_indices`](#new-compute_ac_seat_indices)
+    - [New `compute_ac_ticket_weight`](#new-compute_ac_ticket_weight)
     - [New `get_head_vote_weight`](#new-get_head_vote_weight)
     - [Modified `get_unslashed_participating_indices`](#modified-get_unslashed_participating_indices)
     - [New `get_validator_weight`](#new-get_validator_weight)
@@ -2397,6 +2398,29 @@ def compute_ac_seat_indices(
     return seat_indices
 ```
 
+#### New `compute_ac_ticket_weight`
+
+```python
+def compute_ac_ticket_weight(
+    snapshots: ACSnapshots,
+    dynasty: Dynasty,
+    slot: Slot,
+    validator_index: ValidatorIndex,
+    secret: Bytes32,
+) -> Uint64:
+    snapshot_number = Uint64(dynasty // get_ac_snapshot_cycle_length())
+    old_index = snapshot_number % len(snapshots)
+    seat_indices = compute_ac_seat_indices(
+        snapshots[old_index],
+        snapshots[(old_index + 1) % len(snapshots)],
+        dynasty,
+        slot,
+        validator_index,
+        secret,
+    )
+    return Uint64(len(seat_indices))
+```
+
 #### New `get_head_vote_weight`
 
 Validator duties use the voting head's post-state and the full duty slot,
@@ -2425,18 +2449,7 @@ def get_head_vote_weight(
         return Uint64(0)
 
     dynasty = state.dynasty if slot >= state.dynasty_start_slot else state.dynasty - 1
-    snapshot_number = Uint64(dynasty // get_ac_snapshot_cycle_length())
-    snapshots = state.ac_snapshots
-    old_index = snapshot_number % len(snapshots)
-    seat_indices = compute_ac_seat_indices(
-        snapshots[old_index],
-        snapshots[(old_index + 1) % len(snapshots)],
-        dynasty,
-        slot,
-        validator_index,
-        proof[0],
-    )
-    return Uint64(len(seat_indices))
+    return compute_ac_ticket_weight(state.ac_snapshots, dynasty, slot, validator_index, proof[0])
 ```
 
 #### Modified `get_unslashed_participating_indices`

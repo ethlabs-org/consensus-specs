@@ -41,6 +41,7 @@
     - [New `get_ac_vote`](#new-get_ac_vote)
     - [New `get_ac_tally_state`](#new-get_ac_tally_state)
     - [New `compute_ac_vote_weight`](#new-compute_ac_vote_weight)
+    - [New `has_ac_admission_ticket`](#new-has_ac_admission_ticket)
     - [New `sum_head_vote_weights`](#new-sum_head_vote_weights)
     - [New `get_block_and_payload_receipt_time`](#new-get_block_and_payload_receipt_time)
     - [New `get_vote_resolution_time`](#new-get_vote_resolution_time)
@@ -77,7 +78,8 @@
     - [New `update_confirmation`](#new-update_confirmation)
     - [New `unlock`](#new-unlock)
   - [`on_head_vote_message` helpers](#on_head_vote_message-helpers)
-    - [New `is_valid_head_vote_message`](#new-is_valid_head_vote_message)
+    - [New `is_valid_head_vote_opening`](#new-is_valid_head_vote_opening)
+    - [New `is_valid_head_vote_signature`](#new-is_valid_head_vote_signature)
 - [Handlers](#handlers)
   - [Modified `on_tick`](#modified-on_tick)
   - [Modified `on_block`](#modified-on_block)
@@ -684,28 +686,32 @@ dynasties replace the draws for `HEAD_VOTE_SEATS_PER_DYNASTY` seat indices. Each
 version of each lane has one ticket in expectation.
 
 ```python
-def compute_ac_vote_weight(state: BeaconState, vote: ACVote) -> Uint64:
+def compute_ac_vote_weight(
+    state: BeaconState, vote: ACVote, dynasty: Dynasty | None = None
+) -> Uint64:
+    if dynasty is None:
+        dynasty = state.dynasty
     for index, validator in enumerate(state.validators):
         if validator.pubkey == vote.pubkey:
             if validator.vrf_root != vote.vrf_root:
                 return Uint64(0)
-            dynasty = state.dynasty
-            snapshot_number = Uint64(dynasty // get_ac_snapshot_cycle_length())
-            snapshots = state.ac_snapshots
-            old_index = snapshot_number % len(snapshots)
-            return Uint64(
-                len(
-                    compute_ac_seat_indices(
-                        snapshots[old_index],
-                        snapshots[(old_index + 1) % len(snapshots)],
-                        dynasty,
-                        vote.slot,
-                        ValidatorIndex(index),
-                        vote.secret,
-                    )
-                )
+            return compute_ac_ticket_weight(
+                state.ac_snapshots, dynasty, vote.slot, ValidatorIndex(index), vote.secret
             )
     return Uint64(0)
+```
+
+#### New `has_ac_admission_ticket`
+
+Check the local tally state's current and previous lotteries for the signed
+slot. A previous-only winner can propagate without contributing to a current
+tally.
+
+```python
+def has_ac_admission_ticket(state: BeaconState, vote: ACVote) -> bool:
+    return compute_ac_vote_weight(state, vote) > 0 or (
+        state.dynasty > 0 and compute_ac_vote_weight(state, vote, state.dynasty - 1) > 0
+    )
 ```
 
 #### New `sum_head_vote_weights`
@@ -1612,21 +1618,23 @@ def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVo
 
 ### `on_head_vote_message` helpers
 
-#### New `is_valid_head_vote_message`
+#### New `is_valid_head_vote_opening`
 
 ```python
-def is_valid_head_vote_message(state: BeaconState, message: HeadVoteMessage) -> bool:
-    """
-    Authenticate the head vote against the registry on its signed head.
-    """
+def is_valid_head_vote_opening(state: BeaconState, message: HeadVoteMessage) -> bool:
     if not is_head_vote_payload_status_valid(state, message.data):
         return False
     if compute_epoch_at_slot(message.data.slot) < PQ_FORK_EPOCH:
         return False
     if message.validator_index >= len(state.validators):
         return False
-    if not is_valid_vrf_proof(state, message.validator_index, message.data.slot, message.proof):
-        return False
+    return is_valid_vrf_proof(state, message.validator_index, message.data.slot, message.proof)
+```
+
+#### New `is_valid_head_vote_signature`
+
+```python
+def is_valid_head_vote_signature(state: BeaconState, message: HeadVoteMessage) -> bool:
     domain = get_domain(state, DOMAIN_HEAD_VOTE, compute_epoch_at_slot(message.data.slot))
     signing_root = compute_signing_root(message.data, domain)
     leaf_index = compute_xmss_leaf_index(message.data.slot, LEAF_OFFSET_HEAD_VOTE)
@@ -1979,8 +1987,11 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
     ]
     if data in previous or len(previous) >= 2:
         return
-    assert is_valid_head_vote_message(state, message)
+    assert is_valid_head_vote_opening(state, message)
     vote = get_ac_vote(state, message)
+    if not has_ac_admission_ticket(get_ac_tally_state(store), vote):
+        return
+    assert is_valid_head_vote_signature(state, message)
     if early:
         store.pending_head_votes.append((message, vote))
         return

@@ -631,9 +631,18 @@ def validate_head_vote_gossip(
     if data_root in roots or len(roots) >= 2:
         raise GossipIgnore("duplicate head vote or two-vote limit reached")
 
-    # [REJECT] The signed vote has a valid signature and opening
-    if not is_valid_head_vote_message(state, head_vote_message):
-        raise GossipReject("invalid head vote signature or opening")
+    # [REJECT] The vote has a valid opening on the voted head
+    if not is_valid_head_vote_opening(state, head_vote_message):
+        raise GossipReject("invalid head vote opening")
+
+    # [IGNORE] The opening wins in the local current or previous dynasty
+    vote = get_ac_vote(state, head_vote_message)
+    if not has_ac_admission_ticket(get_ac_tally_state(store), vote):
+        raise GossipIgnore("no head vote ticket in the local admission window")
+
+    # [REJECT] The vote has a valid signature on the voted head
+    if not is_valid_head_vote_signature(state, head_vote_message):
+        raise GossipReject("invalid head vote signature")
 
     # Mark this head vote as seen
     if head_vote_key not in seen.head_vote_validator_slots:
