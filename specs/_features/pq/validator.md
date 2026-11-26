@@ -433,7 +433,7 @@ proposer's VRF proof for `block.slot`.
 
 Set `block.body.head_vote_declarations` and `block.body.head_vote_support_bits`
 to the declarations and support bits returned by
-[`get_ac_proposal`](./fork-choice.md#new-get_ac_proposal). The vote slot is
+[`get_ac_proposal`](./available-chain.md#new-get_ac_proposal). The vote slot is
 `block.slot - 1`.
 
 Independently select up to `MAX_HEAD_VOTES` signed aggregates that satisfy
@@ -648,14 +648,14 @@ receipts and at `get_head_vote_due_ms()` into the slot, even if none of its
 validators belongs to the head vote committee. Early preparation requires all
 eligible declarations across current-slot proposals in the FG tree to be held,
 and all marked eligible heads of at least one such proposal to be usable (see
-[`is_ac_vote_ready`](./fork-choice.md#new-is_ac_vote_ready)). At the deadline
-the node prepares with the held declarations, omitting the rest. Preparation
-caches one head per slot and unlocks using the frozen local view merged with
-current proposals. When a new prepared head becomes available, assigned
-validators immediately sign, process locally and broadcast their vote once.
-Unselected validators do not sign, self-admit or emit a vote. Repeated requests
-in the same slot return the prepared head without unlocking again. A `None`
-result means preparation is not ready yet or the deadline was missed. A
+[`is_ac_vote_ready`](./available-chain.md#new-is_ac_vote_ready)). At the
+deadline the node prepares with the held declarations, omitting the rest.
+Preparation caches one head per slot and unlocks using the frozen local view
+merged with current proposals. When a new prepared head becomes available,
+assigned validators immediately sign, process locally and broadcast their vote
+once. Unselected validators do not sign, self-admit or emit a vote. Repeated
+requests in the same slot return the prepared head without unlocking again. A
+`None` result means preparation is not ready yet or the deadline was missed. A
 validator must never sign two different head votes for one slot.
 
 #### Head vote data
@@ -715,10 +715,11 @@ assigned slot and staggered committee schedule.
 
 #### Attestation data
 
-First, obtain `source` from `get_ac_frame(store)` at or after the support
-cutoff. The `source` is the deepest viable effective live fast-lock node whose
-vote slot is at least the current slot minus two. Slow locks do not provide FG
-sources. If `source` is `None`, the validator does not attest.
+First, obtain `source` from
+[`get_ac_frame(store)`](./finality-gadget.md#new-get_ac_frame) at or after the
+support cutoff. The `source` is the deepest viable effective live fast-lock node
+whose vote slot is at least the current slot minus two. Slow locks do not
+provide FG sources. If `source` is `None`, the validator does not attest.
 
 Let `source_state` be the state after processing `source`:
 
