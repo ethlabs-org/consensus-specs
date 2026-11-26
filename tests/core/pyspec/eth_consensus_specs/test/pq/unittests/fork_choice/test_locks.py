@@ -88,7 +88,9 @@ def tree(spec, monkeypatch):
 
 
 def lock(spec, node, slot=9, fast=True, expiry=13):
-    return spec.ACLock(node=node, slot=spec.Slot(slot), fast=fast, expiry_slot=spec.Slot(expiry))
+    return spec.ACLock(
+        node=node, vote_slot=spec.Slot(slot), fast=fast, expiry_slot=spec.Slot(expiry)
+    )
 
 
 def vote(spec, store, node, validator, slot=10, received=None, weight=1):
@@ -126,7 +128,7 @@ def test_fast_expiry_grows_and_is_capped(spec, tree):
         store.time_ms = at_slot(spec, slot + 1) + spec.get_support_cutoff_ms()
         vote(spec, store, nodes["A"], 0, slot=slot, weight=spec.HEAD_VOTE_FAST_LOCK_THRESHOLD)
         spec.update_confirmation(store, spec.Slot(slot))
-        current = [item for item in store.locks if item.slot == slot and item.fast]
+        current = [item for item in store.locks if item.vote_slot == slot and item.fast]
         assert len(current) == 1
         expiries.append(int(current[0].expiry_slot))
     assert expiries == list(range(12, 73, 2)) + [73, 74]
@@ -140,7 +142,7 @@ def test_fast_expiry_paper_example_and_gap(spec, tree, monkeypatch):
         store.time_ms = at_slot(spec, slot + 1) + spec.get_support_cutoff_ms()
         vote(spec, store, nodes["A"], 0, slot=slot, weight=spec.HEAD_VOTE_FAST_LOCK_THRESHOLD)
         spec.update_confirmation(store, spec.Slot(slot))
-        current = [item for item in store.locks if item.slot == slot and item.fast]
+        current = [item for item in store.locks if item.vote_slot == slot and item.fast]
         assert len(current) == 1
         expiries.append(int(current[0].expiry_slot))
     assert expiries == [12, 14, 16, 18, 20, 22]
@@ -153,9 +155,9 @@ def test_fast_expiry_ignores_ineligible_locks(spec, tree, kind):
     if kind == "slow":
         existing = replace(existing, fast=False)
     elif kind == "same_slot":
-        existing = replace(existing, slot=spec.Slot(10))
+        existing = replace(existing, vote_slot=spec.Slot(10))
     elif kind == "newer_slot":
-        existing = replace(existing, slot=spec.Slot(11))
+        existing = replace(existing, vote_slot=spec.Slot(11))
     elif kind == "expired":
         existing = replace(existing, expiry_slot=spec.Slot(10))
     else:
@@ -188,7 +190,7 @@ def test_fast_and_slow_locks_with_same_node_and_expiry(spec, tree, monkeypatch):
     store.locks = {lock(spec, nodes["A"], expiry=12)}
     vote(spec, store, nodes["A"], 0, weight=spec.HEAD_VOTE_FAST_LOCK_THRESHOLD)
     spec.update_confirmation(store, spec.Slot(10))
-    new = {item for item in store.locks if item.slot == 10}
+    new = {item for item in store.locks if item.vote_slot == 10}
     assert new == {
         lock(spec, nodes["A"], slot=10, fast=True, expiry=14),
         lock(spec, nodes["A"], slot=10, fast=False, expiry=14),

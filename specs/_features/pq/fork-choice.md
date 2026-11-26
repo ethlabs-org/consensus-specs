@@ -156,16 +156,16 @@ Both `SLOW_LOCK_WINDOW` and `FAST_LOCK_EXTENSION` must be at least two.
 
 ### New `ACLock`
 
-*Note*: A lock records its node, confirmation slot, whether it is fast, and its
-last live slot. It expires at the start of `expiry_slot + 1`. Moving the lock to
-an ancestor preserves its other fields. Fast and slow locks remain separate,
-even when they lock the same node or have the same expiry.
+*Note*: A lock records its node, vote slot, whether it is fast, and its last
+live slot. It expires at the start of `expiry_slot + 1`. Moving the lock to an
+ancestor preserves its other fields. Fast and slow locks remain separate, even
+when they lock the same node or have the same expiry.
 
 ```python
 @dataclass(eq=True, frozen=True)
 class ACLock:
     node: ForkChoiceNode
-    slot: Slot
+    vote_slot: Slot
     fast: bool
     expiry_slot: Slot
 ```
@@ -1028,7 +1028,7 @@ def get_live_locks(store: Store, fg_frame: FGFrame, time_ms: Uint64) -> set[ACLo
     return {
         ACLock(
             node=get_viable_ancestor(store, fg_frame, viable_tree, lock.node),
-            slot=lock.slot,
+            vote_slot=lock.vote_slot,
             fast=lock.fast,
             expiry_slot=lock.expiry_slot,
         )
@@ -1053,7 +1053,7 @@ still contributes. Locks from the same or a newer slot do not contribute.
 
 ```python
 def compute_fast_lock_expiry(live_locks: set[ACLock], slot: Slot) -> Slot:
-    expiries = {lock.expiry_slot for lock in live_locks if lock.fast and lock.slot < slot}
+    expiries = {lock.expiry_slot for lock in live_locks if lock.fast and lock.vote_slot < slot}
     if len(expiries) == 0:
         return slot + 2
     return min(slot + SLOW_LOCK_WINDOW, max(slot + 2, max(expiries) + FAST_LOCK_EXTENSION))
@@ -1479,14 +1479,14 @@ def update_locks_and_confirmation(
         locks.add(
             ACLock(
                 node=fast_lock,
-                slot=slot,
+                vote_slot=slot,
                 fast=True,
                 expiry_slot=compute_fast_lock_expiry(live_locks, slot),
             )
         )
     if slow_lock is not None:
         locks.add(
-            ACLock(node=slow_lock, slot=slot, fast=False, expiry_slot=slot + SLOW_LOCK_WINDOW)
+            ACLock(node=slow_lock, vote_slot=slot, fast=False, expiry_slot=slot + SLOW_LOCK_WINDOW)
         )
 
     # A veto stops the confirmation record, not locks on compatible ancestors.
@@ -1616,7 +1616,7 @@ def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVo
     locks = set()
     for lock in get_live_locks(store, fg_frame, store.time_ms):
         node = lock.node
-        if lock.slot < slot:
+        if lock.vote_slot < slot:
             fallback_path = {
                 ancestor
                 for ancestor in fg_frame.tree
@@ -1627,7 +1627,11 @@ def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVo
                 if len(fallback_path) > 0
                 else fg_frame.finalized_node
             )
-        locks.add(ACLock(node=node, slot=lock.slot, fast=lock.fast, expiry_slot=lock.expiry_slot))
+        locks.add(
+            ACLock(
+                node=node, vote_slot=lock.vote_slot, fast=lock.fast, expiry_slot=lock.expiry_slot
+            )
+        )
     store.locks = locks
 ```
 
@@ -2172,9 +2176,9 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
 ### New `get_ac_frame`
 
 *Notes*: At or after the support cutoff, returns the FG confirmation node. It is
-the deepest viable effective live fast-lock node whose confirmation slot is at
-least the current slot minus two, or `None` if no such node exists. Slow locks
-do not provide FG sources.
+the deepest viable effective live fast-lock node whose vote slot is at least the
+current slot minus two, or `None` if no such node exists. Slow locks do not
+provide FG sources.
 
 The AC frame is used by validators at scheduled FG duties. Each duty reads the
 currently eligible source; publication is deduplicated by each validator's
@@ -2191,7 +2195,7 @@ def get_ac_frame(store: Store) -> ForkChoiceNode | None:
     candidates = {
         lock.node
         for lock in get_live_locks(store, fg_frame, store.time_ms)
-        if lock.fast and current_slot <= lock.slot + 2 and lock.node in viable_subtree
+        if lock.fast and current_slot <= lock.vote_slot + 2 and lock.node in viable_subtree
     }
     if len(candidates) == 0:
         return None

@@ -717,8 +717,8 @@ assigned slot and staggered committee schedule.
 
 First, obtain `source` from `get_ac_frame(store)` at or after the support
 cutoff. The `source` is the deepest viable effective live fast-lock node whose
-confirmation slot is at least the current slot minus two. Slow locks do not
-provide FG sources. If `source` is `None`, the validator does not attest.
+vote slot is at least the current slot minus two. Slow locks do not provide FG
+sources. If `source` is `None`, the validator does not attest.
 
 Let `source_state` be the state after processing `source`:
 
