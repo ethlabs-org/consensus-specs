@@ -182,7 +182,7 @@
     - [Modified `process_epoch`](#modified-process_epoch)
     - [Modified `process_builder_pending_payments`](#modified-process_builder_pending_payments)
     - [New `get_ac_weights`](#new-get_ac_weights)
-    - [New `process_ac_snapshot_updates`](#new-process_ac_snapshot_updates)
+    - [New `process_ac_snapshot_seed_update`](#new-process_ac_snapshot_seed_update)
     - [New `process_preregistration_expiry`](#new-process_preregistration_expiry)
     - [Modified `apply_pending_deposit`](#modified-apply_pending_deposit)
     - [Modified `process_pending_deposits`](#modified-process_pending_deposits)
@@ -2870,7 +2870,7 @@ def process_epoch(state: BeaconState) -> None:
     process_proposer_lookahead(state)
     process_ptc_window(state)
     # [New in PQ:EIP8453]
-    process_ac_snapshot_updates(state)
+    process_ac_snapshot_seed_update(state)
     # [New in PQ:EIP8205]
     process_preregistration_expiry(state)
 ```
@@ -2917,7 +2917,7 @@ def get_ac_weights(state: BeaconState, epoch: Epoch) -> ACWeights:
     )
 ```
 
-#### New `process_ac_snapshot_updates`
+#### New `process_ac_snapshot_seed_update`
 
 Seal at the end of `snapshot.seed_epoch`, the first full epoch after capture,
 using that epoch's completed RANDAO mix. A slashing before capture can change
@@ -2926,7 +2926,7 @@ RANDAO reveal runs before capture, so that epoch's completed mix may already be
 known when the weights are fixed.
 
 ```python
-def process_ac_snapshot_updates(state: BeaconState) -> None:
+def process_ac_snapshot_seed_update(state: BeaconState) -> None:
     if state.dynasty == 0 or not is_last_ac_snapshot_dynasty(state.dynasty):
         return
     epoch = get_current_epoch(state)
