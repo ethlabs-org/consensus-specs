@@ -40,6 +40,7 @@
     - [New `ACVote`](#new-acvote)
     - [New `get_ac_vote`](#new-get_ac_vote)
     - [New `get_ac_tally_state`](#new-get_ac_tally_state)
+    - [New `get_ac_vote_validator_index`](#new-get_ac_vote_validator_index)
     - [New `compute_ac_vote_weight`](#new-compute_ac_vote_weight)
     - [New `has_ac_admission_ticket`](#new-has_ac_admission_ticket)
     - [New `sum_head_vote_weights`](#new-sum_head_vote_weights)
@@ -676,29 +677,34 @@ def get_ac_tally_state(store: Store) -> BeaconState:
     return get_block_state(store, store.finalized_checkpoint.root if root is None else root)
 ```
 
-#### New `compute_ac_vote_weight`
+#### New `get_ac_vote_validator_index`
 
-The tally uses its current dynasty, even for a vote from the preceding slot. The
-voted head authenticated the key and opening; the tally state's registry
-supplies the index for the lottery. A key with a different VRF commitment in
-that registry cannot use this opening. With the same snapshot history, adjacent
-dynasties replace the draws for `HEAD_VOTE_SEATS_PER_DYNASTY` seat indices. Each
-version of each lane has one ticket in expectation.
+The voted head authenticated the key and opening; the tally state's registry
+supplies the index for the lottery when both the key and commitment match.
 
 ```python
-def compute_ac_vote_weight(
-    state: BeaconState, vote: ACVote, dynasty: Dynasty | None = None
-) -> Uint64:
-    if dynasty is None:
-        dynasty = state.dynasty
+def get_ac_vote_validator_index(state: BeaconState, vote: ACVote) -> ValidatorIndex | None:
     for index, validator in enumerate(state.validators):
         if validator.pubkey == vote.pubkey:
-            if validator.vrf_root != vote.vrf_root:
-                return Uint64(0)
-            return compute_ac_ticket_weight(
-                state.ac_snapshots, dynasty, vote.slot, ValidatorIndex(index), vote.secret
-            )
-    return Uint64(0)
+            return ValidatorIndex(index) if validator.vrf_root == vote.vrf_root else None
+    return None
+```
+
+#### New `compute_ac_vote_weight`
+
+The tally uses its current dynasty, even for a vote from the preceding slot.
+With the same snapshot history, adjacent dynasties replace the draws for
+`HEAD_VOTE_SEATS_PER_DYNASTY` seat indices. Each version of each lane has one
+ticket in expectation.
+
+```python
+def compute_ac_vote_weight(state: BeaconState, vote: ACVote) -> Uint64:
+    index = get_ac_vote_validator_index(state, vote)
+    if index is None:
+        return Uint64(0)
+    return compute_ac_ticket_weight(
+        state.ac_snapshots, state.dynasty, vote.slot, index, vote.secret
+    )
 ```
 
 #### New `has_ac_admission_ticket`
@@ -709,8 +715,17 @@ tally.
 
 ```python
 def has_ac_admission_ticket(state: BeaconState, vote: ACVote) -> bool:
-    return compute_ac_vote_weight(state, vote) > 0 or (
-        state.dynasty > 0 and compute_ac_vote_weight(state, vote, state.dynasty - 1) > 0
+    index = get_ac_vote_validator_index(state, vote)
+    if index is None:
+        return False
+    return compute_ac_ticket_weight(
+        state.ac_snapshots, state.dynasty, vote.slot, index, vote.secret
+    ) > 0 or (
+        state.dynasty > 0
+        and compute_ac_ticket_weight(
+            state.ac_snapshots, state.dynasty - 1, vote.slot, index, vote.secret
+        )
+        > 0
     )
 ```
 
@@ -2079,7 +2094,9 @@ def get_ac_proposal(
 
 *Note*: Declarations across current-slot proposals must be held by an exact vote
 or equivocation evidence. At least one proposal must have usable heads for its
-marked exact votes.
+marked exact votes. A timely vote held by the proposer can fall outside the
+receiver's admission window. In that case the receiver can wait until the
+head-vote deadline even if it received the declared message.
 
 ```python
 def is_ac_vote_ready(store: Store) -> bool:

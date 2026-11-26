@@ -28,10 +28,10 @@ def tree(spec, monkeypatch):
     # Lock tests can specify exact ticket counts; authenticated votes use the sampler.
     compute_weight = spec.compute_ac_vote_weight
 
-    def compute_vote_weight(state, vote, dynasty=None):
+    def compute_vote_weight(state, vote):
         if vote.vrf_root == spec.Root():
             return spec.bytes_to_uint64(vote.secret[:8])
-        return compute_weight(state, vote, dynasty)
+        return compute_weight(state, vote)
 
     monkeypatch.setattr(spec, "compute_ac_vote_weight", compute_vote_weight)
     # F -- P -- A -- A1
@@ -1042,7 +1042,7 @@ def test_head_vote_admission_across_snapshot_rollover(spec, tree, gap):
     store, nodes = tree
     head = store.block_states[nodes["B"].root]
     add_elected_validator(spec, head)
-    slot = spec.Slot(11)
+    slot = spec.Slot(10)
     proof = spec.VRFProof(data=get_vrf_proof(0, slot))
     cycle_length = spec.get_ac_snapshot_cycle_length()
     head.dynasty = spec.Dynasty(cycle_length - 1)
@@ -1064,21 +1064,39 @@ def test_head_vote_admission_across_snapshot_rollover(spec, tree, gap):
         signature=spec.get_head_vote_signature(head, data, 1),
         proof=proof,
     )
+    proposal = store.blocks[nodes["B1"].root]
+    proposal.slot = slot + 1
+    proposal.body.head_vote_declarations.append(
+        spec.HeadVoteDeclaration(
+            validator_index=0,
+            beacon_block_root=data.beacon_block_root,
+            payload_status=data.payload_status,
+        )
+    )
+    proposal.body.head_vote_support_bits.append(False)
+    store.time_ms = at_slot(spec, slot + 1) + spec.get_head_vote_due_ms() - 1
     seen = SimpleNamespace(head_vote_validator_slots={})
     if gap == 2:
         # A valid opening but invalid signature is ignored before XMSS.
-        message.signature = spec.XMSSSignature()
+        invalid = message.copy()
+        invalid.signature = spec.XMSSSignature()
         with pytest.raises(spec.GossipIgnore, match="no head vote ticket"):
-            spec.validate_head_vote_gossip(seen, store, message, store.time_ms, {})
+            spec.validate_head_vote_gossip(seen, store, invalid, store.time_ms, {})
+        spec.on_head_vote_message(store, invalid)
+        # An honestly signed declaration still cannot make this receiver ready.
         spec.on_head_vote_message(store, message)
         assert not seen.head_vote_validator_slots
         assert not store.head_vote_messages
+        assert spec.get_ac_vote_head(store) is None
+        store.time_ms += 1
+        assert spec.get_ac_vote_head(store) is not None
         return
 
     spec.validate_head_vote_gossip(seen, store, message, store.time_ms, {})
     spec.on_head_vote_message(store, message)
     assert store.head_vote_messages[slot] == [message]
     assert spec.sum_head_vote_weights(store, set(store.validated_head_votes.values()), slot) == 0
+    assert spec.get_ac_vote_head(store) is not None
 
 
 def test_admitted_vote_is_reweighed_when_max_dynasty_advances(spec, tree, monkeypatch):
