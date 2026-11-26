@@ -134,6 +134,21 @@ def test_store_conversion_anchors_at_casper_finality(spec, chain):
     assert upgraded.finalized_checkpoint.height == anchor.height
 
 
+def test_finality_advances_at_the_same_fork_anchor_root(spec, chain):
+    store, _, _, _, _, _ = chain
+    anchor = store.finalized_checkpoint
+    assert anchor.height == 0
+    state = spec.get_block_state(store, anchor.root)
+    checkpoint = spec.HeightCheckpoint(height=1, root=anchor.root)
+    assert state.target_checkpoint == checkpoint
+    state.justified_checkpoint = checkpoint
+    state.finalized_checkpoint = checkpoint
+
+    spec.update_finality(store, state)
+
+    assert store.finalized_checkpoint == checkpoint
+
+
 def test_historical_head_with_no_eligible_ac_weight(spec, eip8483):
     state = create_genesis_state(
         eip8483, [eip8483.MAX_EFFECTIVE_BALANCE] * 64, eip8483.MAX_EFFECTIVE_BALANCE

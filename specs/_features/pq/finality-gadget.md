@@ -171,7 +171,7 @@ Then replace the store's finalized checkpoint with the state's finalized
 checkpoint when all conditions hold:
 
 - Its height is greater than the store's finalized height.
-- Its block is a strict descendant of the store's finalized block.
+- Its block descends from or equals the store's finalized block.
 - Its block is an ancestor of or equal to the store's justified block, including
   any justification update made above.
 - Its block or one of its descendants passes the FG viability check.
@@ -195,7 +195,7 @@ def update_finality(store: Store, state: BeaconState) -> None:
     # Update finality
     if (
         state.finalized_checkpoint.height > store.finalized_checkpoint.height
-        and is_strict_ancestor_root(
+        and is_ancestor_root(
             store, state.finalized_checkpoint.root, store.finalized_checkpoint.root
         )
         and is_ancestor_root(

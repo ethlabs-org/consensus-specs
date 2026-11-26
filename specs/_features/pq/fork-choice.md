@@ -10,7 +10,6 @@
   - [Modified `get_forkchoice_store`](#modified-get_forkchoice_store)
   - [New `upgrade_store_to_pq`](#new-upgrade_store_to_pq)
   - [New `is_ancestor_root`](#new-is_ancestor_root)
-  - [New `is_strict_ancestor_root`](#new-is_strict_ancestor_root)
   - [New `get_deepest_node`](#new-get_deepest_node)
   - [New `is_compatible`](#new-is_compatible)
   - [New `get_subtree`](#new-get_subtree)
@@ -221,16 +220,6 @@ def is_ancestor_root(store: Store, root: Root, ancestor: Root) -> bool:
     node = ForkChoiceNode(root=root, payload_status=PAYLOAD_STATUS_PENDING)
     ancestor_node = ForkChoiceNode(root=ancestor, payload_status=PAYLOAD_STATUS_PENDING)
     return is_ancestor(store, node, ancestor_node)
-```
-
-### New `is_strict_ancestor_root`
-
-```python
-def is_strict_ancestor_root(store: Store, root: Root, ancestor: Root) -> bool:
-    """
-    Return ``True`` if ``ancestor`` is a strict ancestor of ``root``.
-    """
-    return root != ancestor and is_ancestor_root(store, root, ancestor)
 ```
 
 ### New `get_deepest_node`
