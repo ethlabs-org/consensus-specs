@@ -69,6 +69,14 @@ def prove_head_votes(spec, state, votes):
     return spec.stark_prove_aggregates(statements, signatures)
 
 
+def test_ac_snapshot_cycle_preset_bounds(spec):
+    size = spec.HEAD_VOTE_COMMITTEE_SIZE
+    rate = spec.HEAD_VOTE_SEATS_PER_DYNASTY
+    assert 1 <= rate <= size // 2
+    assert size % rate == 0
+    assert spec.AC_SNAPSHOT_CYCLE_LENGTH == size // rate >= 2
+
+
 def test_stalled_dynasty_uses_frozen_stake_and_slot_opening(spec, state):
     slot = state.slot
     proof = spec.VRFProof(data=get_vrf_proof(0, slot))
