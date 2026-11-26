@@ -2419,15 +2419,12 @@ def get_head_vote_weight(
         return Uint64(0)
     if validator_index >= len(state.validators):
         return Uint64(0)
+    if slot < state.previous_dynasty_start_slot:
+        return Uint64(0)
     if not is_valid_vrf_proof(state, validator_index, slot, proof):
         return Uint64(0)
 
-    dynasty = state.dynasty
-    if slot < state.dynasty_start_slot:
-        if slot < state.previous_dynasty_start_slot:
-            return Uint64(0)
-        dynasty -= 1
-
+    dynasty = state.dynasty if slot >= state.dynasty_start_slot else state.dynasty - 1
     snapshot_number = Uint64(dynasty // get_ac_snapshot_cycle_length())
     snapshots = state.ac_snapshots
     old_index = snapshot_number % len(snapshots)
