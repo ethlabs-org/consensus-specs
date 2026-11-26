@@ -313,15 +313,20 @@ upgrade. Participation in the last epoch before the upgrade is not rewarded.
 AC starts at dynasty zero with snapshot boundary index zero. Snapshots zero and
 one use the eligible weights at the fork and the completed pre-fork RANDAO mix
 (the genesis mix at a genesis fork), with `seed_epoch` recording the epoch of
-that mix. Their snapshot numbers distinguish their draws. The third entry
-captures its first snapshot on entry to the last dynasty of the first cycle (at
-dynasty one for a one-dynasty cycle).
+that mix. Their snapshot numbers distinguish their draws. With more than one
+dynasty per cycle, the third entry captures its first snapshot on entry to the
+last dynasty of the first cycle. At full rotation (one dynasty per cycle),
+dynasty zero uses its bootstrap snapshots and the first capture is on entry to
+dynasty one.
 
 The AC bootstrap captures eligible weight from registered validators at the
-fork. Until finality passes the fork, fork choice evaluates votes for pre-fork
-heads using each voted head's own upgraded snapshots. A historical head upgraded
-independently can have no eligible weight and therefore supplies no AC seats.
-Proposer and payload timeliness committee lookahead retain their own
+fork. For a vote on a pre-fork head, the head's upgraded state authenticates the
+voter and opening. The receiver checks admission against the current and
+previous dynasties of its
+[tally state](./available-chain.md#new-get_ac_tally_state) and counts weight in
+its current dynasty only. Before the first accepted PQ block, that state is the
+upgraded finalized state, which can have a different bootstrap lottery from the
+voted head. Proposer and payload timeliness committee lookahead retain their own
 requirements during epoch processing.
 
 ```python
