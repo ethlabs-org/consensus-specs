@@ -2919,7 +2919,7 @@ known when the weights are fixed.
 ```python
 def process_ac_snapshot_updates(state: BeaconState) -> None:
     cycle_length = get_ac_snapshot_cycle_length()
-    if state.dynasty == 0 or (cycle_length > 1 and state.dynasty % cycle_length == 0):
+    if state.dynasty == 0 or state.dynasty % cycle_length != cycle_length - 1:
         return
     epoch = get_current_epoch(state)
     snapshot = state.ac_snapshots[compute_ac_next_snapshot_index(state.dynasty)]
@@ -4129,8 +4129,8 @@ def compute_ac_next_snapshot_index(dynasty: Dynasty) -> Uint64:
 ##### New `update_ac_snapshots`
 
 At rollover, the third ring entry becomes the newest descriptor and the old
-entry is retained for votes from the previous dynasty. The next dynasty frees
-that retired entry, which can then capture weights for the next rollover.
+entry is retained for votes from the previous dynasty. Capture into the retired
+entry on entry to the last dynasty of the cycle.
 
 When the cycle is one dynasty long, only one descriptor is active. Every entry
 after bootstrap captures the next descriptor, while retaining the descriptor of
@@ -4148,12 +4148,8 @@ def update_ac_snapshots(state: BeaconState) -> None:
 
 ##### New `advance_dynasty_if_ready`
 
-Rollover requires a finalized block from after the next descriptor's seal. With
-the default rate, this is already guaranteed: at least two slots per dynasty
-leave `2 * (C - 2)` slots from capture to the last dynasty of a cycle of length
-`C`, more than the two epochs sealing can take on either preset. With faster
-cycles, a height can advance while the dynasty waits for the seal and its
-finalization.
+Rollover requires a finalized block from after the next descriptor's seal.
+Heights can advance while the last dynasty waits for that block.
 
 ```python
 def advance_dynasty_if_ready(state: BeaconState) -> None:
@@ -4169,7 +4165,7 @@ def advance_dynasty_if_ready(state: BeaconState) -> None:
             return
 
     advance_dynasty(state)
-    if position == 0:
+    if state.dynasty % cycle_length == cycle_length - 1:
         update_ac_snapshots(state)
 ```
 

@@ -314,7 +314,8 @@ AC starts at dynasty zero with snapshot boundary index zero. Snapshots zero and
 one use the eligible weights at the fork and the completed pre-fork RANDAO mix
 (the genesis mix at a genesis fork), with `seed_epoch` recording the epoch of
 that mix. Their snapshot numbers distinguish their draws. The third entry
-captures its first snapshot when dynasty one begins.
+captures its first snapshot on entry to the last dynasty of the first cycle (at
+dynasty one for a one-dynasty cycle).
 
 The AC bootstrap captures eligible weight from registered validators at the
 fork. Until finality passes the fork, fork choice evaluates votes for pre-fork

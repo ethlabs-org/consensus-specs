@@ -208,8 +208,7 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
         != seat_indices
     )
 
-    # The entry block can include the outgoing duty before it advances the
-    # dynasty and captures the replacement in the retired descriptor's entry.
+    # The entry block can include the outgoing duty before advancing the dynasty.
     spec.process_slots(state, slot + 4)
     quorum = spec.HeightParticipation(data=[spec.Boolean(value=True)] * len(state.validators))
     checkpoint = spec.HeightCheckpoint(height=2, root=spec.Root(b"\x02" * 32))
@@ -234,15 +233,12 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     spec.process_block(state, block)
     assert state.dynasty == cycle_length + 1
     assert len(state.ac_snapshots) == 3
-    assert sum(int(weight) for weight in state.ac_snapshots[0].weights) > 1
+    assert state.ac_snapshots[0] == first
     assert state.ac_snapshots[1] == second
     assert state.ac_snapshots[2] == first
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == 0
 
     # Its child rejects the same duty although the payment epoch is still open.
-    epoch = spec.get_current_epoch(state)
-    assert state.ac_snapshots[0].seed_epoch == epoch + 1
-    assert spec.get_randao_mix(state, epoch) != spec.Bytes32()
     spec.process_slots(state, state.slot + 1)
     child = build_empty_block(spec, state)
     spec.process_block(state.copy(), child)
@@ -251,18 +247,35 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     with pytest.raises(AssertionError):
         spec.process_block(state.copy(), child)
 
+    # Entering the last dynasty captures into the retired entry.
+    state.dynasty = spec.Dynasty(2 * cycle_length - 2)
+    state.finalized_slot = state.dynasty_start_slot
+    spec.advance_height(state)
+    assert state.dynasty == 2 * cycle_length - 1
+    epoch = spec.get_current_epoch(state)
+    assert state.ac_snapshots[0].seed_epoch == epoch + 1
+    assert sum(int(weight) for weight in state.ac_snapshots[0].weights) > 1
+
     # Capture fixes the weights; only the next full epoch's mix seals them.
     captured = state.ac_snapshots[0].weights.copy()
     state.validators[0].slashed = True
     seed_epoch_start = spec.compute_start_slot_at_epoch(epoch + 1)
-    if state.slot < seed_epoch_start:
-        spec.process_slots(state, seed_epoch_start)
+    spec.process_slots(state, seed_epoch_start)
     assert state.ac_snapshots[0].seed == spec.Bytes32()
     mix = spec.Bytes32(b"\x37" * 32)
     state.randao_mixes[(epoch + 1) % spec.EPOCHS_PER_HISTORICAL_VECTOR] = mix
-    spec.process_slots(state, spec.compute_start_slot_at_epoch(epoch + 2))
+    seal_slot = spec.compute_start_slot_at_epoch(epoch + 2)
+    spec.process_slots(state, seal_slot + 1)
     assert state.ac_snapshots[0].seed == mix
     assert state.ac_snapshots[0].weights == captured
+
+    state.finalized_slot = seal_slot - 1
+    spec.advance_height(state)
+    assert state.dynasty == 2 * cycle_length - 1
+    state.finalized_slot = seal_slot
+    spec.advance_height(state)
+    assert state.dynasty == 2 * cycle_length
+    assert state.ac_snapshots[0].seed == mix
 
 
 def test_ac_full_rotation_waits_for_finalized_seal(spec, state, monkeypatch):
