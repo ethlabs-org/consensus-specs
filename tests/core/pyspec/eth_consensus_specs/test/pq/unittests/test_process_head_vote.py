@@ -142,14 +142,15 @@ def test_ac_snapshot_stall_at_bootstrap_leaves_third_entry_untouched(spec, state
 def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeypatch, rate):
     monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
     monkeypatch.setattr(spec, "HEAD_VOTE_SEATS_PER_DYNASTY", spec.Uint64(rate))
+    size = spec.HEAD_VOTE_COMMITTEE_SIZE
+    cycle_length = size // rate
+    monkeypatch.setattr(spec, "AC_SNAPSHOT_CYCLE_LENGTH", cycle_length)
     # Disjoint snapshots expose selection on the wrong side of the snapshot boundary.
     first = spec.ACSnapshot(weights=spec.ACWeights(data=[1, 0]))
     second = spec.ACSnapshot(weights=spec.ACWeights(data=[0, 1]))
     state.ac_snapshots[0] = first
     state.ac_snapshots[1] = second
     state.ac_snapshots[2] = first
-    size = spec.HEAD_VOTE_COMMITTEE_SIZE
-    cycle_length = size // rate
     state.dynasty = spec.Dynasty(cycle_length - 2)
     state.dynasty_start_slot = spec.Slot(1)
     spec.advance_dynasty(state)
@@ -278,14 +279,16 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     assert state.ac_snapshots[0].seed == mix
 
 
-def test_ac_full_rotation_waits_for_finalized_seal(spec, state, monkeypatch):
-    monkeypatch.setattr(spec, "HEAD_VOTE_SEATS_PER_DYNASTY", spec.HEAD_VOTE_COMMITTEE_SIZE)
-    bootstrap = state.ac_snapshots[1].copy()
+def test_ac_two_dynasty_cycle_waits_for_finalized_seal(spec, state, monkeypatch):
+    monkeypatch.setattr(spec, "HEAD_VOTE_SEATS_PER_DYNASTY", spec.HEAD_VOTE_COMMITTEE_SIZE // 2)
+    monkeypatch.setattr(spec, "AC_SNAPSHOT_CYCLE_LENGTH", spec.Uint64(2))
+    bootstrap = state.ac_snapshots.copy()
     state.finalized_checkpoint.height = spec.Height(1)
     state.finalized_slot = state.slot - 1
     spec.advance_height(state)
     assert state.dynasty == 1
-    assert state.ac_snapshots[1] == bootstrap
+    assert state.ac_snapshots[0] == bootstrap[0]
+    assert state.ac_snapshots[1] == bootstrap[1]
 
     snapshot = state.ac_snapshots[2].copy()
     seed_epoch = spec.get_current_epoch(state) + 1
@@ -310,9 +313,16 @@ def test_ac_full_rotation_waits_for_finalized_seal(spec, state, monkeypatch):
     state.finalized_slot = seal_slot
     spec.advance_height(state)
     assert state.dynasty == 2
-    assert state.ac_snapshots[1] == bootstrap
+    assert state.ac_snapshots[0] == bootstrap[0]
+    assert state.ac_snapshots[1] == bootstrap[1]
     assert state.ac_snapshots[2].seed == mix
+
+    state.finalized_slot = state.dynasty_start_slot
+    spec.advance_height(state)
+    assert state.dynasty == 3
     assert state.ac_snapshots[0].seed_epoch == seed_epoch + 2
+    assert state.ac_snapshots[1] == bootstrap[1]
+    assert state.ac_snapshots[2].seed == mix
 
 
 def test_same_slot_vote_records_participation(spec, state):

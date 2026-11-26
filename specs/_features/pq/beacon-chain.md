@@ -151,7 +151,6 @@
     - [New `get_attestation_committee`](#new-get_attestation_committee)
     - [New `get_attestation_epoch`](#new-get_attestation_epoch)
     - [New `get_aggregate_participants`](#new-get_aggregate_participants)
-    - [New `get_ac_snapshot_cycle_length`](#new-get_ac_snapshot_cycle_length)
     - [New `is_last_ac_snapshot_dynasty`](#new-is_last_ac_snapshot_dynasty)
     - [New `compute_ac_seat_indices`](#new-compute_ac_seat_indices)
     - [New `compute_ac_ticket_weight`](#new-compute_ac_ticket_weight)
@@ -734,13 +733,14 @@ the record rules out the newest, so the state keeps the older one too.
 
 ### Head votes
 
-| Name                            | Value                  |
-| ------------------------------- | ---------------------- |
-| `HEAD_VOTE_COMMITTEE_SIZE`      | `Uint64(2**9)` (= 512) |
-| `HEAD_VOTE_SEATS_PER_DYNASTY`   | `Uint64(1)`            |
-| `HEAD_VOTE_FAST_LOCK_THRESHOLD` | `Uint64(327)`          |
-| `HEAD_VOTE_UNLOCK_THRESHOLD`    | `Uint64(277)`          |
-| `HEAD_VOTE_PAYMENT_TARGET`      | `Uint64(2**8)` (= 256) |
+| Name                            | Value                                                     |
+| ------------------------------- | --------------------------------------------------------- |
+| `HEAD_VOTE_COMMITTEE_SIZE`      | `Uint64(2**9)` (= 512)                                    |
+| `HEAD_VOTE_SEATS_PER_DYNASTY`   | `Uint64(1)`                                               |
+| `AC_SNAPSHOT_CYCLE_LENGTH`      | `HEAD_VOTE_COMMITTEE_SIZE // HEAD_VOTE_SEATS_PER_DYNASTY` |
+| `HEAD_VOTE_FAST_LOCK_THRESHOLD` | `Uint64(327)`                                             |
+| `HEAD_VOTE_UNLOCK_THRESHOLD`    | `Uint64(277)`                                             |
+| `HEAD_VOTE_PAYMENT_TARGET`      | `Uint64(2**8)` (= 256)                                    |
 
 The committee size is an expectation, not a bound. The fast-lock threshold is
 sized against the upper tail of the total ticket count to make disjoint fast
@@ -764,8 +764,9 @@ distinct voters. The builder payment target only limits payment accounting.
 
 Presets must set `HEAD_VOTE_COMMITTEE_SIZE` to a power of two so seat assignment
 by reduction modulo the committee size is uniform. `HEAD_VOTE_SEATS_PER_DYNASTY`
-must be positive and divide `HEAD_VOTE_COMMITTEE_SIZE`. The number of dynasties
-in a snapshot cycle is the committee size divided by this rate.
+must be a positive divisor of `HEAD_VOTE_COMMITTEE_SIZE` and must not exceed
+`HEAD_VOTE_COMMITTEE_SIZE // 2`. Each snapshot cycle therefore has at least two
+dynasties.
 
 The active snapshots retain their frozen stake as the committee interpolates
 between them. Through a finality stall, the ticket draws remain fresh each slot
@@ -2351,22 +2352,11 @@ def get_aggregate_participants(
     return participants
 ```
 
-#### New `get_ac_snapshot_cycle_length`
-
-```python
-def get_ac_snapshot_cycle_length() -> Uint64:
-    rate = HEAD_VOTE_SEATS_PER_DYNASTY
-    assert 1 <= rate <= HEAD_VOTE_COMMITTEE_SIZE
-    assert HEAD_VOTE_COMMITTEE_SIZE % rate == 0
-    return HEAD_VOTE_COMMITTEE_SIZE // rate
-```
-
 #### New `is_last_ac_snapshot_dynasty`
 
 ```python
 def is_last_ac_snapshot_dynasty(dynasty: Dynasty) -> bool:
-    cycle_length = get_ac_snapshot_cycle_length()
-    return dynasty % cycle_length == cycle_length - 1
+    return dynasty % AC_SNAPSHOT_CYCLE_LENGTH == AC_SNAPSHOT_CYCLE_LENGTH - 1
 ```
 
 #### New `compute_ac_seat_indices`
@@ -2389,9 +2379,8 @@ def compute_ac_seat_indices(
     validator_index: ValidatorIndex,
     secret: Bytes32,
 ) -> Sequence[Uint64]:
-    cycle_length = get_ac_snapshot_cycle_length()
-    snapshot_number = Uint64(dynasty // cycle_length)
-    snapshot_boundary_index = (dynasty % cycle_length) * HEAD_VOTE_SEATS_PER_DYNASTY
+    snapshot_number = Uint64(dynasty // AC_SNAPSHOT_CYCLE_LENGTH)
+    snapshot_boundary_index = (dynasty % AC_SNAPSHOT_CYCLE_LENGTH) * HEAD_VOTE_SEATS_PER_DYNASTY
     old_seat_indices = compute_ac_snapshot_seat_indices(
         old_snapshot, snapshot_number, slot, validator_index, secret
     )
@@ -2418,7 +2407,7 @@ def compute_ac_ticket_weight(
     validator_index: ValidatorIndex,
     secret: Bytes32,
 ) -> Uint64:
-    snapshot_number = Uint64(dynasty // get_ac_snapshot_cycle_length())
+    snapshot_number = Uint64(dynasty // AC_SNAPSHOT_CYCLE_LENGTH)
     old_index = snapshot_number % len(snapshots)
     seat_indices = compute_ac_seat_indices(
         snapshots[old_index],
@@ -2927,7 +2916,7 @@ known when the weights are fixed.
 
 ```python
 def process_ac_snapshot_seed_update(state: BeaconState) -> None:
-    if state.dynasty == 0 or not is_last_ac_snapshot_dynasty(state.dynasty):
+    if not is_last_ac_snapshot_dynasty(state.dynasty):
         return
     epoch = get_current_epoch(state)
     snapshot = state.ac_snapshots[compute_ac_next_snapshot_index(state.dynasty)]
@@ -4128,22 +4117,15 @@ The ring entry that will become active at the next rollover.
 
 ```python
 def compute_ac_next_snapshot_index(dynasty: Dynasty) -> Uint64:
-    cycle_length = get_ac_snapshot_cycle_length()
-    cycle_index = Uint64(dynasty // cycle_length) % 3
-    offset = 1 if cycle_length == 1 else 2
-    return (cycle_index + offset) % 3
+    return (Uint64(dynasty // AC_SNAPSHOT_CYCLE_LENGTH) + 2) % 3
 ```
 
 ##### New `update_ac_snapshots`
 
 At rollover, the third ring entry becomes the newest descriptor and the old
 entry is retained for votes from the previous dynasty. Capture into the retired
-entry on entry to the last dynasty of the cycle.
-
-When the cycle is one dynasty long, only one descriptor is active. Every entry
-after bootstrap captures the next descriptor, while retaining the descriptor of
-the immediately preceding dynasty. Registry indices are append-only on
-descendants of the capture block.
+entry on entry to the last dynasty of the cycle. Registry indices are
+append-only on descendants of the capture block.
 
 ```python
 def update_ac_snapshots(state: BeaconState) -> None:
@@ -4165,7 +4147,7 @@ def is_dynasty_ready_to_advance(state: BeaconState) -> bool:
     if state.finalized_checkpoint.height == 0 or state.finalized_slot < state.dynasty_start_slot:
         return False
 
-    if state.dynasty > 0 and is_last_ac_snapshot_dynasty(state.dynasty):
+    if is_last_ac_snapshot_dynasty(state.dynasty):
         snapshot = state.ac_snapshots[compute_ac_next_snapshot_index(state.dynasty)]
         return compute_epoch_at_slot(state.finalized_slot) > snapshot.seed_epoch
     return True

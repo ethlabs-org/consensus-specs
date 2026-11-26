@@ -1046,8 +1046,7 @@ def test_head_vote_admission_across_snapshot_rollover(spec, tree, gap):
     add_elected_validator(spec, head)
     slot = spec.Slot(10)
     proof = spec.VRFProof(data=get_vrf_proof(0, slot))
-    cycle_length = spec.get_ac_snapshot_cycle_length()
-    head.dynasty = spec.Dynasty(cycle_length - 1)
+    head.dynasty = spec.Dynasty(spec.AC_SNAPSHOT_CYCLE_LENGTH - 1)
     for seed in range(32):
         head.ac_snapshots[0].seed = spec.Bytes32(seed.to_bytes(32, "little"))
         if spec.get_head_vote_weight(head, slot, spec.ValidatorIndex(0), proof) > 0:
