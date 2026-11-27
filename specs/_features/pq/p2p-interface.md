@@ -106,17 +106,16 @@ class SignedProposerPreferences(Container):
 @dataclass
 class Seen:
     proposer_slots: set[tuple[Slot, ValidatorIndex]]
-    aggregator_epochs: set[tuple[Epoch, ValidatorIndex]]
-    aggregate_data_roots: dict[tuple[Root, CommitteeIndex], set[tuple[bool, ...]]]
-    voluntary_exit_indices: set[ValidatorIndex]
+    # [Modified in PQ]
+    # Removed `aggregator_epochs`, `aggregate_data_roots`, and
+    # `voluntary_exit_indices`
     proposer_slashing_indices: set[ValidatorIndex]
     attester_slashing_indices: set[ValidatorIndex]
     # [Modified in PQ:EIP8453]
     # Removed `attestation_validator_epochs`
-    sync_contribution_aggregator_slots: set[tuple[Slot, ValidatorIndex, Uint64]]
-    sync_contribution_data: dict[tuple[Slot, Root, Uint64], set[tuple[bool, ...]]]
-    sync_message_validator_slots: set[tuple[Slot, ValidatorIndex, Uint64]]
-    bls_to_execution_change_indices: set[ValidatorIndex]
+    # [Modified in PQ]
+    # Removed `sync_contribution_aggregator_slots`, `sync_contribution_data`,
+    # `sync_message_validator_slots`, and `bls_to_execution_change_indices`
     data_column_sidecar_tuples: set[tuple[Root, ColumnIndex]]
     execution_payloads: dict[Hash32, ExecutionPayload]
     execution_payload_envelopes: set[tuple[Root, BuilderIndex]]

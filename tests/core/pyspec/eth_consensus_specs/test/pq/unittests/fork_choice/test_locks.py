@@ -73,7 +73,6 @@ def tree(spec, monkeypatch):
         proposer_boost_root=spec.Root(),
         blocks=blocks,
         block_states=states,
-        latest_messages={},
         payloads={},
         payload_timeliness_vote={},
         payload_data_availability_vote={},

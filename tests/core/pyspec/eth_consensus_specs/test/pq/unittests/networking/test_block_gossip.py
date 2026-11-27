@@ -74,7 +74,6 @@ def test_proposer_signature_uses_parent_branch_registry(spec, monkeypatch, align
         proposer_boost_root=spec.Root(),
         blocks=blocks,
         block_states=states,
-        latest_messages={},
         payloads={},
         payload_timeliness_vote={},
         payload_data_availability_vote={},

@@ -53,7 +53,6 @@ def make_store(spec, head_root, head_state):
         proposer_boost_root=spec.Root(),
         blocks={head_root: block},
         block_states={head_root: head_state},
-        latest_messages={},
         payloads={},
         payload_timeliness_vote={},
         payload_data_availability_vote={},

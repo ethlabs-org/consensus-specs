@@ -20,7 +20,6 @@
   - [New `get_upgraded_state`](#new-get_upgraded_state)
   - [New `get_block_state`](#new-get_block_state)
   - [New `get_block_pre_state`](#new-get_block_pre_state)
-  - [New `get_pulled_up_state`](#new-get_pulled_up_state)
   - [Store mutators](#store-mutators)
     - [New `record_block_receipt_time`](#new-record_block_receipt_time)
     - [New `record_payload_receipt_time`](#new-record_payload_receipt_time)
@@ -98,7 +97,8 @@ class Store:
     # Removed `block_timeliness`
     # [Modified in PQ:EIP8453]
     # Removed `checkpoint_states`
-    latest_messages: dict[ValidatorIndex, LatestMessage]
+    # [Modified in PQ:EIP8453]
+    # Removed `latest_messages`
     # [Modified in PQ:EIP8453]
     # Removed `unrealized_justifications`
     # [Modified in PQ:EIP8453]
@@ -149,7 +149,6 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
         proposer_boost_root=Root(),
         blocks={anchor_root: anchor_block.copy()},
         block_states={anchor_root: anchor_state.copy()},
-        latest_messages={},
         payloads={},
         payload_timeliness_vote={anchor_root: [None] * PTC_SIZE},
         payload_data_availability_vote={anchor_root: [None] * PTC_SIZE},
@@ -193,7 +192,6 @@ def upgrade_store_to_pq(pre: eip8483.Store) -> Store:
         proposer_boost_root=Root(),
         blocks=dict(pre.blocks),
         block_states=dict(pre.block_states),
-        latest_messages={},
         payloads=dict(pre.payloads),
         payload_timeliness_vote=dict(pre.payload_timeliness_vote),
         payload_data_availability_vote=dict(pre.payload_data_availability_vote),
@@ -353,22 +351,6 @@ def get_block_pre_state(store: Store, block: BeaconBlock) -> BeaconState:
     if state.slot < block.slot:
         process_slots(state, block.slot)
     return state
-```
-
-### New `get_pulled_up_state`
-
-```python
-def get_pulled_up_state(store: Store, block_root: Root) -> BeaconState:
-    """
-    Return the state of the block pulled up to the current epoch if needed.
-    """
-    block_state = get_block_state(store, block_root)
-    if get_current_epoch(block_state) < get_current_store_epoch(store):
-        pulled_up_state = block_state.copy()
-        process_slots(pulled_up_state, compute_start_slot_at_epoch(get_current_store_epoch(store)))
-        return pulled_up_state
-    else:
-        return block_state
 ```
 
 ### Store mutators
