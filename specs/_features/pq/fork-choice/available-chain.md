@@ -28,7 +28,6 @@
     - [New `get_head_vote_messages_by_cutoff`](#new-get_head_vote_messages_by_cutoff)
     - [New `get_declared_votes_and_readiness`](#new-get_declared_votes_and_readiness)
     - [New `is_usable_proposer_support`](#new-is_usable_proposer_support)
-    - [New `get_votes_declared_in_proposals`](#new-get_votes_declared_in_proposals)
     - [New `compute_merged_view`](#new-compute_merged_view)
     - [New `get_head_votes_by_cutoff`](#new-get_head_votes_by_cutoff)
     - [New `get_equivocating_pubkeys`](#new-get_equivocating_pubkeys)
@@ -59,7 +58,6 @@
     - [New `is_valid_head_vote_signature`](#new-is_valid_head_vote_signature)
 - [Internal API](#internal-api)
   - [New `get_ac_proposal`](#new-get_ac_proposal)
-  - [New `is_ac_vote_ready`](#new-is_ac_vote_ready)
   - [New `get_ac_vote_head`](#new-get_ac_vote_head)
   - [New `get_confirmed_execution_block_hash`](#new-get_confirmed_execution_block_hash)
 - [External API](#external-api)
@@ -362,6 +360,12 @@ declared key back the declaration, regardless of current ticket counts. The
 declaration enters the view under its own head, with support if marked and
 usable. Its ticket evidence comes from the pool votes that back it.
 
+Early readiness requires backing for every declaration across current-slot
+proposals and usable heads for all marked declarations of at least one proposal.
+A timely vote held by the proposer can fall outside the receiver's admission
+window. In that case the receiver can wait until the head-vote deadline even if
+it received the declared message.
+
 ```python
 def get_declared_votes_and_readiness(
     store: Store, tree: Sequence[ForkChoiceNode], slot: Slot
@@ -445,23 +449,6 @@ def is_usable_proposer_support(
             == (data.payload_status == PAYLOAD_STATUS_PENDING)
         )
     )
-```
-
-#### New `get_votes_declared_in_proposals`
-
-*Note*: Builds an AC proposer view. Supporting votes must reference locally
-known blocks. *Full* block support additionally requires a verified payload.
-
-```python
-def get_votes_declared_in_proposals(
-    store: Store, tree: Sequence[ForkChoiceNode], block_slot: Slot
-) -> tuple[set[ACVote], set[ACVote]]:
-    """
-    Return the held declarations and usable support of the slot's proposals.
-    """
-
-    votes, support, _ = get_declared_votes_and_readiness(store, tree, block_slot)
-    return votes, support
 ```
 
 #### New `compute_merged_view`
@@ -696,30 +683,28 @@ a restricted view.
 
 ```python
 def get_head_walk_anchor(
-    store: Store, fg_frame: FGFrame, finalized_subtree: Sequence[ForkChoiceNode]
+    store: Store, fg_frame: FGFrame, tree: Sequence[ForkChoiceNode]
 ) -> ForkChoiceNode:
     """
     Return the deepest live lock node or the forkchoice root.
     """
     return get_deepest_node(
         store,
-        {lock.node for lock in get_live_locks(store, fg_frame, finalized_subtree)}
-        | {fg_frame.forkchoice_root},
+        {lock.node for lock in get_live_locks(store, fg_frame, tree)} | {fg_frame.forkchoice_root},
     )
 ```
 
 #### New `get_head_in_tree`
 
-*Note*: Walks the viable subtree of tree from the head-walk anchor, using the
-head-walk scoring and eligibility rules. The anchor is selected from the full FG
-frame independently of tree.
+*Note*: Selects the anchor in the full FG tree and applies the head-walk scoring
+and eligibility rules over the viable subtree of `walk_tree`.
 
 ```python
 def get_head_in_tree(
     store: Store,
     fg_frame: FGFrame,
-    finalized_subtree: Sequence[ForkChoiceNode],
     tree: Sequence[ForkChoiceNode],
+    walk_tree: Sequence[ForkChoiceNode],
     votes: set[ACVote],
     support_votes: set[ACVote],
     slot: Slot,
@@ -727,8 +712,8 @@ def get_head_in_tree(
     """
     Return the head of the tree.
     """
-    anchor = get_head_walk_anchor(store, fg_frame, finalized_subtree)
-    viable_subtree = get_viable_subtree(store, fg_frame, tree)
+    anchor = get_head_walk_anchor(store, fg_frame, tree)
+    viable_subtree = get_viable_subtree(store, fg_frame, walk_tree)
     return compute_ghost_head(
         store=store,
         anchor=anchor,
@@ -1182,8 +1167,8 @@ def get_ac_proposal(
     head = get_head_in_tree(
         store=store,
         fg_frame=fg_frame,
-        finalized_subtree=tree,
         tree=tree,
+        walk_tree=tree,
         votes=votes,
         support_votes=support_votes,
         slot=current_slot - 1,
@@ -1220,32 +1205,15 @@ def get_ac_proposal(
     return head, declarations, bits
 ```
 
-### New `is_ac_vote_ready`
-
-*Note*: Declarations across current-slot proposals must be held by an exact vote
-or equivocation evidence. At least one proposal must have usable heads for its
-marked exact votes. A timely vote held by the proposer can fall outside the
-receiver's admission window. In that case the receiver can wait until the
-head-vote deadline even if it received the declared message.
-
-```python
-def is_ac_vote_ready(store: Store, tree: Sequence[ForkChoiceNode]) -> bool:
-    """
-    Return the current slot's readiness computed by
-    ``get_declared_votes_and_readiness``.
-    """
-    _, _, ready = get_declared_votes_and_readiness(store, tree, get_current_slot(store))
-    return ready
-```
-
 ### New `get_ac_vote_head`
 
-*Note*: Prepares the head as soon as [`is_ac_vote_ready`](#new-is_ac_vote_ready)
-holds, or at the head-vote deadline without requiring readiness. Returns `None`
-before readiness or after a missed deadline. The prepared result remains stable
-for the slot. Merges the frozen local P2P view with views from current slot
-proposals, then walks the voter's viable subtree, falling back to the full FG
-tree if that subtree is empty.
+*Note*: Prepares the head once
+[`get_declared_votes_and_readiness`](#new-get_declared_votes_and_readiness)
+reports ready, or at the head-vote deadline without requiring readiness. Returns
+`None` before readiness or after a missed deadline. The prepared result remains
+stable for the slot. Merges the frozen local P2P view with views from current
+slot proposals, then walks the voter's viable subtree, falling back to the full
+FG tree if that subtree is empty.
 
 ```python
 def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
@@ -1257,7 +1225,10 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
         return None
     fg_frame = get_fg_frame(store)
     tree = get_subtree(store, fg_frame.finalized_node)
-    if elapsed < get_head_vote_due_ms() and not is_ac_vote_ready(store, tree):
+    declared_votes, declared_support, ready = get_declared_votes_and_readiness(
+        store, tree, current_slot
+    )
+    if elapsed < get_head_vote_due_ms() and not ready:
         return None
 
     if current_slot == GENESIS_SLOT:
@@ -1274,7 +1245,7 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
         resolution_threshold_ms=view_freeze_ms,
     )
     # Proposer view
-    proposer_view = get_votes_declared_in_proposals(store, tree, current_slot)
+    proposer_view = (declared_votes, declared_support)
     # Merge views
     votes, support_votes = compute_merged_view(store, local_view, proposer_view)
     unlock(store, fg_frame, tree, current_slot - 1, votes, support_votes)
@@ -1286,8 +1257,8 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
     head = get_head_in_tree(
         store=store,
         fg_frame=fg_frame,
-        finalized_subtree=tree,
-        tree=voter_subtree,
+        tree=tree,
+        walk_tree=voter_subtree,
         votes=votes,
         support_votes=support_votes,
         slot=current_slot - 1,
@@ -1370,8 +1341,8 @@ def get_head(store: Store) -> ForkChoiceNode:
     head = get_head_in_tree(
         store=store,
         fg_frame=fg_frame,
-        finalized_subtree=tree,
         tree=tree,
+        walk_tree=tree,
         votes=votes,
         support_votes=support_votes,
         slot=slot,

@@ -611,7 +611,7 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree, at_deadline):
         store.time_ms += spec.get_head_vote_due_ms() - 1
         assert spec.get_ac_vote_head(store) is None
         store.time_ms += 1
-        cast, support = spec.get_votes_declared_in_proposals(
+        cast, support, _ = spec.get_declared_votes_and_readiness(
             store, finalized_subtree(spec, store), spec.Slot(11)
         )
         assert cast == support
@@ -642,7 +642,7 @@ def propose_votes(spec, store, nodes, votes):
 
 
 def merged_voters(spec, view):
-    votes, support = view
+    votes, support = view[:2]
     return {int.from_bytes(v.pubkey, "little") for v in votes}, {
         int.from_bytes(v.pubkey, "little") for v in support
     }
@@ -660,13 +660,13 @@ def test_proposer_support_needs_known_verified_head(spec, tree):
         nodes,
         [(unknown, [0, 1], True), (full, [2, 3], True), (nodes["B"], [4, 5], True)],
     )
-    view = spec.get_votes_declared_in_proposals(
+    view = spec.get_declared_votes_and_readiness(
         store, finalized_subtree(spec, store), spec.Slot(11)
     )
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {4, 5})
     # Verifying the payload lets the proposer's support count for the full vote
     store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
-    view = spec.get_votes_declared_in_proposals(
+    view = spec.get_declared_votes_and_readiness(
         store, finalized_subtree(spec, store), spec.Slot(11)
     )
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {2, 3, 4, 5})
@@ -677,7 +677,7 @@ def test_declarations_keep_individual_support_bits(spec, tree):
     propose_votes(
         spec, store, nodes, [(nodes["B"], [0, 1, 2], True), (nodes["B"], [3, 4, 5], False)]
     )
-    view = spec.get_votes_declared_in_proposals(
+    view = spec.get_declared_votes_and_readiness(
         store, finalized_subtree(spec, store), spec.Slot(11)
     )
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {0, 1, 2})
@@ -689,23 +689,23 @@ def test_pair_backed_declaration_matches_proposer_support(spec, tree):
     propose_votes(spec, store, nodes, [(nodes["B"], [0], True)])
     store.block_states[nodes["B"].root].validators.append(spec.Validator())
     subtree = finalized_subtree(spec, store)
-    proposer_view = spec.get_votes_declared_in_proposals(store, subtree, spec.Slot(11))
+    proposer_view = spec.get_declared_votes_and_readiness(store, subtree, spec.Slot(11))
     store.head_vote_messages.clear()
     store.head_vote_message_receipt_times.clear()
     store.validated_head_votes.clear()
     freeze = at_slot(spec, 10) + spec.get_view_freeze_ms()
     vote(spec, store, nodes["P"], 0, received=freeze, weight=3)
-    assert not spec.is_ac_vote_ready(store, subtree)
+    assert spec.get_ac_vote_head(store) is None
     vote(spec, store, nodes["A"], 0, received=freeze, weight=2)
     messages = list(store.head_vote_messages[10])
     receipts = dict(store.head_vote_message_receipt_times)
     validated = dict(store.validated_head_votes)
-    assert spec.is_ac_vote_ready(store, subtree)
     assert spec.get_ac_vote_head(store) is not None
-    voter_view = spec.get_votes_declared_in_proposals(store, subtree, spec.Slot(11))
+    votes, support, ready = spec.get_declared_votes_and_readiness(store, subtree, spec.Slot(11))
+    assert ready
     local_view = spec.get_head_vote_messages_by_cutoff(store, spec.Slot(10), freeze, freeze)
-    merged, support = spec.compute_merged_view(store, local_view, voter_view)
-    assert (merged, support) == proposer_view
+    merged, support = spec.compute_merged_view(store, local_view, (votes, support))
+    assert (merged, support) == proposer_view[:2]
     assert not spec.get_equivocating_pubkeys(merged)
     assert {v.supported_node for v in support} == {nodes["B"]}
     assert spec.compute_head_walk_score(store, merged, support, spec.Slot(10), nodes["B"]) == 3
@@ -750,7 +750,7 @@ def test_pair_backed_marked_support_waits_for_payload(spec, tree):
 def test_proposer_support_follows_bits_when_both_resolve_locally(spec, tree):
     store, nodes = tree
     propose_votes(spec, store, nodes, [(nodes["A"], [0, 1], False), (nodes["B"], [2, 3], True)])
-    proposer_view = spec.get_votes_declared_in_proposals(
+    proposer_view = spec.get_declared_votes_and_readiness(
         store, finalized_subtree(spec, store), spec.Slot(11)
     )
     assert merged_voters(spec, proposer_view) == ({0, 1, 2, 3}, {2, 3})
@@ -782,14 +782,11 @@ def test_unheld_declaration_delays_ready_sibling(spec, tree):
     )
     sibling.body.head_vote_support_bits.append(True)
     store.block_states[nodes["A1"].root] = store.block_states[nodes["B1"].root].copy()
-    assert not spec.is_ac_vote_ready(store, finalized_subtree(spec, store))
-    assert merged_voters(
-        spec,
-        spec.get_votes_declared_in_proposals(store, finalized_subtree(spec, store), spec.Slot(11)),
-    ) == (
-        {0},
-        {0},
+    votes, support, ready = spec.get_declared_votes_and_readiness(
+        store, finalized_subtree(spec, store), spec.Slot(11)
     )
+    assert not ready
+    assert merged_voters(spec, (votes, support)) == ({0}, {0})
 
 
 @pytest.mark.parametrize(
@@ -935,7 +932,6 @@ def test_vote_readiness_waits_for_evidence_and_supported_heads(spec, tree, suppo
         store.head_vote_messages.clear()
         store.head_vote_message_receipt_times.clear()
     ready = held and not supported
-    assert spec.is_ac_vote_ready(store, finalized_subtree(spec, store)) == ready
     assert (spec.get_ac_vote_head(store) is not None) == ready
 
 
@@ -1000,7 +996,10 @@ def test_responsive_vote_accepts_other_in_frame_proposer(spec, tree):
     proposal.proposer_index = 2
     # An empty proposal is ready even before any previous-slot votes are held.
     assert not proposal.body.head_vote_declarations
-    assert spec.is_ac_vote_ready(store, finalized_subtree(spec, store))
+    _, _, ready = spec.get_declared_votes_and_readiness(
+        store, finalized_subtree(spec, store), spec.Slot(11)
+    )
+    assert ready
     vote(spec, store, nodes["B"], 0)
     assert spec.get_ac_vote_head(store) == replace(
         nodes["B1"], payload_status=spec.PAYLOAD_STATUS_PENDING
@@ -1045,10 +1044,10 @@ def test_readiness_matches_proposer_support(spec, tree, status, in_frame):
         store.justified_checkpoint = store.finalized_checkpoint.copy()
     propose_votes(spec, store, nodes, [(replace(nodes["A"], payload_status=status), [0], True)])
     usable = in_frame and status == spec.PAYLOAD_STATUS_PENDING
-    assert spec.is_ac_vote_ready(store, finalized_subtree(spec, store)) == usable
-    _, support = spec.get_votes_declared_in_proposals(
+    _, support, ready = spec.get_declared_votes_and_readiness(
         store, finalized_subtree(spec, store), spec.Slot(11)
     )
+    assert ready == usable
     assert bool(support) == usable
 
 

@@ -649,8 +649,8 @@ receipts and at `get_head_vote_due_ms()` into the slot, even if none of its
 validators belongs to the head vote committee. Early preparation requires all
 eligible declarations across current-slot proposals in the FG tree to be held,
 and all marked eligible heads of at least one such proposal to be usable (see
-[`is_ac_vote_ready`](./fork-choice/available-chain.md#new-is_ac_vote_ready)). At
-the deadline the node prepares with the held declarations, omitting the rest.
+[`get_declared_votes_and_readiness`](./fork-choice/available-chain.md#new-get_declared_votes_and_readiness)).
+At the deadline the node prepares with the held declarations, omitting the rest.
 Preparation caches one head per slot and unlocks using the frozen local view
 merged with current proposals. When a new prepared head becomes available,
 assigned validators immediately sign, process locally and broadcast their vote
