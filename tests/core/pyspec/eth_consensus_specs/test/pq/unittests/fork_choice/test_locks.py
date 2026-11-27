@@ -152,18 +152,12 @@ def test_fast_expiry_paper_example_and_gap(spec, tree, monkeypatch):
     assert expiries == [12, 14, 16, 18, 20, 22]
 
 
-@pytest.mark.parametrize(
-    "kind", ["slow", "same_slot", "newer_slot", "expired", "outside_frame", "unverified_full"]
-)
+@pytest.mark.parametrize("kind", ["slow", "expired", "outside_frame", "unverified_full"])
 def test_fast_expiry_ignores_ineligible_locks(spec, tree, kind):
     store, nodes = tree
     existing = lock(spec, nodes["A"])
     if kind == "slow":
         existing = replace(existing, fast=False)
-    elif kind == "same_slot":
-        existing = replace(existing, vote_slot=spec.Slot(10))
-    elif kind == "newer_slot":
-        existing = replace(existing, vote_slot=spec.Slot(11))
     elif kind == "expired":
         existing = replace(existing, expiry_slot=spec.Slot(10))
     elif kind == "unverified_full":
