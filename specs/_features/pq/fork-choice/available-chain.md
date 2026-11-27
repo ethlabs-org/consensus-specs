@@ -515,17 +515,10 @@ def get_viable_ancestor(
     node: ForkChoiceNode,
 ) -> ForkChoiceNode:
     """
-    Return the deepest ancestor that is viable or an ancestor of the forkchoice root.
+    Return the deepest ancestor in the viable subtree, or the finalized node.
     """
-    return get_deepest_node(
-        store,
-        {
-            ancestor
-            for ancestor in fg_frame.tree
-            if is_ancestor(store, node, ancestor)
-            and (ancestor in viable_tree or is_ancestor(store, fg_frame.forkchoice_root, ancestor))
-        },
-    )
+    ancestors = {ancestor for ancestor in viable_tree if is_ancestor(store, node, ancestor)}
+    return get_deepest_node(store, ancestors) if ancestors else fg_frame.finalized_node
 ```
 
 #### New `get_live_locks`
@@ -692,12 +685,12 @@ a restricted view.
 ```python
 def get_head_walk_anchor(store: Store, fg_frame: FGFrame) -> ForkChoiceNode:
     """
-    Return the higher of the highest live lock node and the forkchoice root.
+    Return the highest live lock node, or the finalized node if there is no lock.
     """
     highest_lock_node = get_highest_live_lock_node(store, get_live_locks(store, fg_frame))
     if highest_lock_node is None:
-        return fg_frame.forkchoice_root
-    return get_deepest_node(store, {highest_lock_node, fg_frame.forkchoice_root})
+        return fg_frame.finalized_node
+    return highest_lock_node
 ```
 
 #### New `get_head_in_tree`

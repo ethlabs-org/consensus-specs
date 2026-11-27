@@ -311,9 +311,8 @@ def is_parent_node_full(
 ### New `get_upgraded_state`
 
 *Note*: The upgrade replays the slots from the state's slot to the fork, up to
-an epoch near the fork. Readers such as `is_fg_contest` upgrade every stored
-block before the fork on each call, so implementations should cache the upgraded
-state of each stored block.
+an epoch near the fork. Readers such as `get_fg_frame` can access stored states
+repeatedly, so implementations should cache their upgraded versions.
 
 ```python
 def get_upgraded_state(state: eip8483.BeaconState | BeaconState) -> BeaconState:

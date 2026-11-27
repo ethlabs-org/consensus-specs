@@ -9,7 +9,6 @@
   - [New `FGFrame`](#new-fgframe)
   - [New `get_fg_frame`](#new-get_fg_frame)
   - [New `get_viable_subtree`](#new-get_viable_subtree)
-  - [New `is_fg_contest`](#new-is_fg_contest)
   - [New `is_fg_viable_block`](#new-is_fg_viable_block)
   - [New `has_viable_descendant`](#new-has_viable_descendant)
 - [Store updates](#store-updates)
@@ -26,6 +25,13 @@ The finality gadget supplies the viable frame for the
 [AC locks](./available-chain.md#new-get_live_locks) for the FG source. Both use
 the shared [fork-choice store](./local-store.md#modified-store).
 
+*Provisional*: The frame is rooted at the finalized block and uses the P-U
+viability rule from the
+[verified-consensus adoption series](https://github.com/ethlabs-org/verified-consensus/commit/528d89635a0a0af87ec6c33d074409118e51edbb).
+That series compiles without errors or `sorry` in `Solution` and passed the fast
+tier and Codex and Astra reviews. This spec may be adjusted when the series
+lands on `main`.
+
 ## Helpers
 
 ### New `FGFrame`
@@ -37,7 +43,6 @@ walks.
 @dataclass
 class FGFrame:
     finalized_node: ForkChoiceNode
-    forkchoice_root: ForkChoiceNode
     tree: Sequence[ForkChoiceNode]
     viable_heads: set[ForkChoiceNode]
 ```
@@ -50,32 +55,12 @@ def get_fg_frame(store: Store) -> FGFrame:
         root=store.finalized_checkpoint.root,
         payload_status=PAYLOAD_STATUS_PENDING,
     )
-
-    # Compute the forkchoice_root based on the justification height and FG contest
-    if store.max_height == store.justified_checkpoint.height + 1 and not is_fg_contest(store):
-        forkchoice_block_root = store.justified_checkpoint.root
-    else:
-        forkchoice_block_root = store.finalized_checkpoint.root
-    forkchoice_root = ForkChoiceNode(
-        root=forkchoice_block_root,
-        payload_status=PAYLOAD_STATUS_PENDING,
-    )
-
     # Share the finalized subtree across all readers of this frame.
     tree = get_subtree(store, finalized_node)
-
-    # Viable nodes must be descendants of forkchoice_root and pass the FG viability test
-    viable_heads = {
-        node
-        for node in tree
-        if is_ancestor(store, node, forkchoice_root) and is_fg_viable_block(store, node.root)
-    }
-
     return FGFrame(
         finalized_node=finalized_node,
-        forkchoice_root=forkchoice_root,
         tree=tree,
-        viable_heads=viable_heads,
+        viable_heads={node for node in tree if is_fg_viable_block(store, node.root)},
     )
 ```
 
@@ -86,57 +71,30 @@ def get_viable_subtree(
     store: Store, fg_frame: FGFrame, tree: Sequence[ForkChoiceNode]
 ) -> Sequence[ForkChoiceNode]:
     """
-    Return a subtree of ``tree`` that passes the viability test.
+    Return the nodes in ``tree`` with a viable head in that same domain.
     """
     viable_heads_in_tree = set(tree) & fg_frame.viable_heads
     return [
         node
         for node in tree
-        # Nodes must be descendants of forkchoice_root
-        # and ancestors of at least one viable head belonging to the tree
-        if is_ancestor(store, node, fg_frame.forkchoice_root)
-        and any(is_ancestor(store, viable_head, node) for viable_head in viable_heads_in_tree)
+        if any(is_ancestor(store, viable_head, node) for viable_head in viable_heads_in_tree)
     ]
-```
-
-### New `is_fg_contest`
-
-*Note*: FG contest occurs when the maximum known height is exactly one above the
-justified checkpoint height, and a block at that maximum height extends the
-finalized checkpoint but conflicts with the justified checkpoint.
-
-```python
-def is_fg_contest(store: Store) -> bool:
-    """
-    Return ``True`` if ``store`` is in an FG contest.
-    """
-    if store.max_height > store.justified_checkpoint.height + 1:
-        return False
-    max_height_blocks = [
-        root
-        for root in store.blocks
-        if get_block_state(store, root).target_checkpoint.height == store.max_height
-        and is_ancestor_root(store, root, store.finalized_checkpoint.root)
-    ]
-    return any(
-        not is_ancestor_root(store, b, store.justified_checkpoint.root) for b in max_height_blocks
-    )
 ```
 
 ### New `is_fg_viable_block`
 
-*Note*: The height floor depends on whether there is FG contest or not.
-
 ```python
 def is_fg_viable_block(store: Store, block_root: Root) -> bool:
     """
-    Return ``True`` if block passes the height floor check.
+    Return ``True`` if the block passes the FG height and justification test.
     """
-    block_target = get_block_state(store, block_root).target_checkpoint
-    if is_fg_contest(store):
-        return block_target.height >= store.max_height
-    else:
-        return block_target.height + 1 >= store.max_height
+    height = get_block_state(store, block_root).target_checkpoint.height
+    if height >= store.max_height:
+        return True
+    return height + 1 == store.max_height and (
+        store.justified_checkpoint.height < height
+        or is_ancestor_root(store, block_root, store.justified_checkpoint.root)
+    )
 ```
 
 ### New `has_viable_descendant`

@@ -310,14 +310,33 @@ def test_live_locks_move_to_viable_ancestor_and_stay_there(spec, tree):
     assert spec.get_live_locks(store, full_frame) == {moved}
 
 
-def test_anchor_uses_frame_root_when_lock_is_its_ancestor(spec, tree):
+@pytest.mark.parametrize("justified", ["F", "A"])
+def test_fg_viability_at_frontier(spec, tree, justified):
     store, nodes = tree
-    store.locks = {lock(spec, nodes["P"])}
-    frame = replace(
-        spec.get_fg_frame(store), forkchoice_root=nodes["A"], viable_heads={nodes["A1"]}
+    store.max_height = spec.Height(2)
+    store.justified_checkpoint = spec.HeightCheckpoint(
+        height=int(justified == "A"), root=nodes[justified].root
     )
-    assert spec.get_head_walk_anchor(store, frame) == nodes["A"]
-    assert not spec.conflicts_with_lock(store, nodes["P"], nodes["A1"])
+    for name, height in [("A", 1), ("B", 1), ("A1", 2), ("B1", 2)]:
+        store.block_states[nodes[name].root].target_checkpoint.height = spec.Height(height)
+
+    frame = spec.get_fg_frame(store)
+    assert spec.get_head_walk_anchor(store, frame) == frame.finalized_node
+    expected_heads = {nodes[name].root for name in ("A", "A1", "B1")}
+    if justified == "F":
+        expected_heads.add(nodes["B"].root)
+    assert {node.root for node in frame.viable_heads} == expected_heads
+
+    # A restricted walk cannot use a frontier block outside its domain to make B viable.
+    restricted = [node for node in frame.tree if node.root != nodes["B1"].root]
+    viable = spec.get_viable_subtree(store, frame, restricted)
+    assert nodes["P"] in viable
+    assert (nodes["B"] in viable) == (justified == "F")
+
+    # With only A's branch at the frontier, finality's guard uses the same rule.
+    store.block_states[nodes["B1"].root].target_checkpoint.height = spec.Height(1)
+    assert spec.has_viable_descendant(store, nodes["B"].root) == (justified == "F")
+    assert spec.get_head_walk_anchor(store, spec.get_fg_frame(store)) == frame.finalized_node
 
 
 @pytest.mark.parametrize("branch", ["A", "B"])
@@ -336,10 +355,7 @@ def test_highest_live_lock_matches_chain_veto_and_anchor(spec, tree, branch):
         old_veto = any(not spec.is_compatible(store, item.node, node) for item in live_locks)
         assert spec.conflicts_with_lock(store, highest, node) == old_veto
 
-    for root in (frame.forkchoice_root, nodes[f"{branch}1"]):
-        rooted_frame = replace(frame, forkchoice_root=root)
-        old_anchor = spec.get_deepest_node(store, {item.node for item in live_locks} | {root})
-        assert spec.get_head_walk_anchor(store, rooted_frame) == old_anchor
+    assert spec.get_head_walk_anchor(store, frame) == highest
 
 
 def test_unlock_at_threshold_moves_to_common_ancestor_preserving_fields(spec, tree):
