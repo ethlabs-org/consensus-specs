@@ -24,8 +24,7 @@ def at_slot(spec, slot):
 
 
 def finalized_subtree(spec, store):
-    frame = spec.get_fg_frame(store)
-    return spec.get_subtree(store, frame.finalized_node)
+    return spec.get_fg_frame(store).tree
 
 
 @pytest.fixture
@@ -189,7 +188,7 @@ def test_fast_expiry_ignores_ineligible_locks(spec, tree, kind):
     store.locks = {existing}
     assert (
         spec.compute_fast_lock_expiry(
-            spec.get_live_locks(store, spec.get_fg_frame(store), finalized_subtree(spec, store)),
+            spec.get_live_locks(store, spec.get_fg_frame(store)),
             spec.Slot(10),
         )
         == 12
@@ -202,7 +201,7 @@ def test_fast_expiry_counts_lock_moved_to_finalized(spec, tree):
     store.locks = {lock(spec, frame.finalized_node, expiry=12)}
     assert (
         spec.compute_fast_lock_expiry(
-            spec.get_live_locks(store, frame, finalized_subtree(spec, store)),
+            spec.get_live_locks(store, frame),
             spec.Slot(10),
         )
         == 14
@@ -287,14 +286,13 @@ def test_expiry_at_slot_start(spec, tree):
     store, nodes = tree
     store.locks = {lock(spec, nodes["A"], expiry=12)}
     frame = spec.get_fg_frame(store)
-    subtree = finalized_subtree(spec, store)
     boundary = at_slot(spec, 13)
     store.time_ms = boundary - 1
-    assert len(spec.get_live_locks(store, frame, subtree)) == 1
+    assert len(spec.get_live_locks(store, frame)) == 1
     store.time_ms = boundary
-    assert not spec.get_live_locks(store, frame, subtree)
+    assert not spec.get_live_locks(store, frame)
     store.time_ms = boundary + 1
-    assert not spec.get_live_locks(store, frame, subtree)
+    assert not spec.get_live_locks(store, frame)
 
 
 def test_live_locks_move_to_viable_ancestor_and_stay_there(spec, tree):
@@ -304,12 +302,12 @@ def test_live_locks_move_to_viable_ancestor_and_stay_there(spec, tree):
     full_frame = spec.get_fg_frame(store)
     frame = replace(full_frame, viable_heads={nodes["B"]})
     moved = replace(original, node=nodes["P"])
-    assert spec.get_live_locks(store, frame, finalized_subtree(spec, store)) == {moved}
-    assert spec.get_head_walk_anchor(store, frame, finalized_subtree(spec, store)) == nodes["P"]
+    assert spec.get_live_locks(store, frame) == {moved}
+    assert spec.get_head_walk_anchor(store, frame) == nodes["P"]
     assert not spec.conflicts_with_lock(store, moved.node, nodes["B"])
     # Even an empty lock update must store the moved node.
-    spec.add_locks(store, frame, finalized_subtree(spec, store), set())
-    assert spec.get_live_locks(store, full_frame, finalized_subtree(spec, store)) == {moved}
+    spec.add_locks(store, frame, set())
+    assert spec.get_live_locks(store, full_frame) == {moved}
 
 
 def test_anchor_uses_frame_root_when_lock_is_its_ancestor(spec, tree):
@@ -318,7 +316,7 @@ def test_anchor_uses_frame_root_when_lock_is_its_ancestor(spec, tree):
     frame = replace(
         spec.get_fg_frame(store), forkchoice_root=nodes["A"], viable_heads={nodes["A1"]}
     )
-    assert spec.get_head_walk_anchor(store, frame, finalized_subtree(spec, store)) == nodes["A"]
+    assert spec.get_head_walk_anchor(store, frame) == nodes["A"]
     assert not spec.conflicts_with_lock(store, nodes["P"], nodes["A1"])
 
 
@@ -331,18 +329,17 @@ def test_highest_live_lock_matches_chain_veto_and_anchor(spec, tree, branch):
         lock(spec, nodes[branch], 10),
     }
     frame = spec.get_fg_frame(store)
-    subtree = finalized_subtree(spec, store)
-    live_locks = spec.get_live_locks(store, frame, subtree)
+    live_locks = spec.get_live_locks(store, frame)
     highest = spec.get_highest_live_lock_node(store, live_locks)
     assert highest == nodes[branch]
-    for node in subtree:
+    for node in frame.tree:
         old_veto = any(not spec.is_compatible(store, item.node, node) for item in live_locks)
         assert spec.conflicts_with_lock(store, highest, node) == old_veto
 
     for root in (frame.forkchoice_root, nodes[f"{branch}1"]):
         rooted_frame = replace(frame, forkchoice_root=root)
         old_anchor = spec.get_deepest_node(store, {item.node for item in live_locks} | {root})
-        assert spec.get_head_walk_anchor(store, rooted_frame, subtree) == old_anchor
+        assert spec.get_head_walk_anchor(store, rooted_frame) == old_anchor
 
 
 def test_unlock_at_threshold_moves_to_common_ancestor_preserving_fields(spec, tree):
@@ -354,7 +351,6 @@ def test_unlock_at_threshold_moves_to_common_ancestor_preserving_fields(spec, tr
     spec.unlock(
         store,
         spec.get_fg_frame(store),
-        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
@@ -370,7 +366,6 @@ def test_unlock_below_threshold_keeps_lock(spec, tree):
     spec.unlock(
         store,
         spec.get_fg_frame(store),
-        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
@@ -389,7 +384,6 @@ def test_unlock_equivocators_count_without_resolved_votes(spec, tree):
     spec.unlock(
         store,
         spec.get_fg_frame(store),
-        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
@@ -409,7 +403,6 @@ def test_unlock_equivocator_not_counted_twice(spec, tree):
     spec.unlock(
         store,
         spec.get_fg_frame(store),
-        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
@@ -424,7 +417,6 @@ def test_unlock_counts_duplicate_committee_seats(spec, tree):
     spec.unlock(
         store,
         spec.get_fg_frame(store),
-        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
@@ -442,7 +434,6 @@ def test_unlock_full_empty_conflict_moves_to_pending(spec, tree):
     spec.unlock(
         store,
         spec.get_fg_frame(store),
-        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
@@ -456,7 +447,6 @@ def test_unlock_removes_expired_locks(spec, tree):
     spec.unlock(
         store,
         spec.get_fg_frame(store),
-        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )

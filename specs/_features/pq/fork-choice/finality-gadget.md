@@ -38,6 +38,7 @@ walks.
 class FGFrame:
     finalized_node: ForkChoiceNode
     forkchoice_root: ForkChoiceNode
+    tree: Sequence[ForkChoiceNode]
     viable_heads: set[ForkChoiceNode]
 ```
 
@@ -60,16 +61,20 @@ def get_fg_frame(store: Store) -> FGFrame:
         payload_status=PAYLOAD_STATUS_PENDING,
     )
 
+    # Share the finalized subtree across all readers of this frame.
+    tree = get_subtree(store, finalized_node)
+
     # Viable nodes must be descendants of forkchoice_root and pass the FG viability test
     viable_heads = {
         node
-        for node in get_subtree(store, finalized_node)
+        for node in tree
         if is_ancestor(store, node, forkchoice_root) and is_fg_viable_block(store, node.root)
     }
 
     return FGFrame(
         finalized_node=finalized_node,
         forkchoice_root=forkchoice_root,
+        tree=tree,
         viable_heads=viable_heads,
     )
 ```
@@ -223,9 +228,8 @@ def get_ac_frame(store: Store) -> ForkChoiceNode | None:
 
     current_slot = get_current_slot(store)
     fg_frame = get_fg_frame(store)
-    tree = get_subtree(store, fg_frame.finalized_node)
-    viable_subtree = get_viable_subtree(store, fg_frame, tree)
-    live_locks = get_live_locks(store, fg_frame, tree)
+    viable_subtree = get_viable_subtree(store, fg_frame, fg_frame.tree)
+    live_locks = get_live_locks(store, fg_frame)
     candidates = {
         lock.node
         for lock in live_locks

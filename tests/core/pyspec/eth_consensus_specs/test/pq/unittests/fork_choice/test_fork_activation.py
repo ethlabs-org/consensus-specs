@@ -115,7 +115,7 @@ def assert_viable_with_anchor_head(spec, store, root):
     # The new block is in the FG frame; with no head votes yet, the AC head
     # stays at the activation anchor
     frame = spec.get_fg_frame(store)
-    assert any(node.root == root for node in spec.get_subtree(store, frame.finalized_node))
+    assert any(node.root == root for node in frame.tree)
     assert spec.get_head(store).root == store.finalized_checkpoint.root
 
 
