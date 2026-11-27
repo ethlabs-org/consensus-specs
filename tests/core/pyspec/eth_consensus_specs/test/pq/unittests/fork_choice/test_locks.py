@@ -239,7 +239,7 @@ def test_missing_candidate_breaks_slow_streak(spec, tree, missing):
     store.saved_confirmations = dict.fromkeys(range(10, 41), nodes["A"])
     assert (
         spec.compute_slow_lock(
-            store, finalized_subtree(spec, store), set(), spec.Slot(41), nodes["A"]
+            store, finalized_subtree(spec, store), None, spec.Slot(41), nodes["A"]
         )
         == nodes["A"]
     )
@@ -249,7 +249,7 @@ def test_missing_candidate_breaks_slow_streak(spec, tree, missing):
         store.saved_confirmations[10] = replace(nodes["A"], root=spec.Root(b"\xff" * 32))
     assert (
         spec.compute_slow_lock(
-            store, finalized_subtree(spec, store), set(), spec.Slot(41), nodes["A"]
+            store, finalized_subtree(spec, store), None, spec.Slot(41), nodes["A"]
         )
         is None
     )
@@ -285,11 +285,7 @@ def test_live_locks_move_to_viable_ancestor_and_stay_there(spec, tree):
     moved = replace(original, node=nodes["P"])
     assert spec.get_live_locks(store, frame, finalized_subtree(spec, store)) == {moved}
     assert spec.get_head_walk_anchor(store, frame, finalized_subtree(spec, store)) == nodes["P"]
-    assert not spec.conflicts_with_lock(
-        store,
-        spec.get_live_locks(store, frame, finalized_subtree(spec, store)),
-        nodes["B"],
-    )
+    assert not spec.conflicts_with_lock(store, moved.node, nodes["B"])
     # Even an empty lock update must store the moved node.
     spec.add_locks(store, frame, finalized_subtree(spec, store), set())
     assert spec.get_live_locks(store, full_frame, finalized_subtree(spec, store)) == {moved}
@@ -302,11 +298,30 @@ def test_anchor_uses_frame_root_when_lock_is_its_ancestor(spec, tree):
         spec.get_fg_frame(store), forkchoice_root=nodes["A"], viable_heads={nodes["A1"]}
     )
     assert spec.get_head_walk_anchor(store, frame, finalized_subtree(spec, store)) == nodes["A"]
-    assert not spec.conflicts_with_lock(
-        store,
-        spec.get_live_locks(store, frame, finalized_subtree(spec, store)),
-        nodes["A1"],
-    )
+    assert not spec.conflicts_with_lock(store, nodes["P"], nodes["A1"])
+
+
+@pytest.mark.parametrize("branch", ["A", "B"])
+def test_highest_live_lock_matches_chain_veto_and_anchor(spec, tree, branch):
+    store, nodes = tree
+    pending = replace(nodes[branch], payload_status=spec.PAYLOAD_STATUS_PENDING)
+    store.locks = {lock(spec, nodes["P"], vote_slot, fast=False) for vote_slot in (7, 8)} | {
+        lock(spec, pending, 9),
+        lock(spec, nodes[branch], 10),
+    }
+    frame = spec.get_fg_frame(store)
+    subtree = finalized_subtree(spec, store)
+    live_locks = spec.get_live_locks(store, frame, subtree)
+    highest = spec.get_highest_live_lock_node(store, live_locks)
+    assert highest == nodes[branch]
+    for node in subtree:
+        old_veto = any(not spec.is_compatible(store, item.node, node) for item in live_locks)
+        assert spec.conflicts_with_lock(store, highest, node) == old_veto
+
+    for root in (frame.forkchoice_root, nodes[f"{branch}1"]):
+        rooted_frame = replace(frame, forkchoice_root=root)
+        old_anchor = spec.get_deepest_node(store, {item.node for item in live_locks} | {root})
+        assert spec.get_head_walk_anchor(store, rooted_frame, subtree) == old_anchor
 
 
 def test_unlock_at_threshold_moves_to_common_ancestor_preserving_fields(spec, tree):

@@ -32,6 +32,7 @@
     - [New `get_equivocating_pubkeys`](#new-get_equivocating_pubkeys)
     - [New `get_viable_ancestor`](#new-get_viable_ancestor)
     - [New `get_live_locks`](#new-get_live_locks)
+    - [New `get_highest_live_lock_node`](#new-get_highest_live_lock_node)
     - [New `conflicts_with_lock`](#new-conflicts_with_lock)
     - [New `compute_fast_lock_expiry`](#new-compute_fast_lock_expiry)
     - [New `compute_ghost_head`](#new-compute_ghost_head)
@@ -552,11 +553,25 @@ def get_live_locks(store: Store, fg_frame: FGFrame, tree: Sequence[ForkChoiceNod
     }
 ```
 
+#### New `get_highest_live_lock_node`
+
+*Note*: Live lock nodes form a chain. Compatibility with the highest node
+therefore implies compatibility with every live lock.
+
+```python
+def get_highest_live_lock_node(store: Store, live_locks: set[ACLock]) -> ForkChoiceNode | None:
+    if not live_locks:
+        return None
+    return get_deepest_node(store, {lock.node for lock in live_locks})
+```
+
 #### New `conflicts_with_lock`
 
 ```python
-def conflicts_with_lock(store: Store, live_locks: set[ACLock], node: ForkChoiceNode) -> bool:
-    return any(not is_compatible(store, lock.node, node) for lock in live_locks)
+def conflicts_with_lock(
+    store: Store, highest_lock_node: ForkChoiceNode | None, node: ForkChoiceNode
+) -> bool:
+    return highest_lock_node is not None and not is_compatible(store, highest_lock_node, node)
 ```
 
 #### New `compute_fast_lock_expiry`
@@ -678,12 +693,12 @@ def get_head_walk_anchor(
     store: Store, fg_frame: FGFrame, tree: Sequence[ForkChoiceNode]
 ) -> ForkChoiceNode:
     """
-    Return the deepest live lock node or the forkchoice root.
+    Return the higher of the highest live lock node and the forkchoice root.
     """
-    return get_deepest_node(
-        store,
-        {lock.node for lock in get_live_locks(store, fg_frame, tree)} | {fg_frame.forkchoice_root},
-    )
+    highest_lock_node = get_highest_live_lock_node(store, get_live_locks(store, fg_frame, tree))
+    if highest_lock_node is None:
+        return fg_frame.forkchoice_root
+    return get_deepest_node(store, {highest_lock_node, fg_frame.forkchoice_root})
 ```
 
 #### New `get_head_in_tree`
@@ -800,13 +815,13 @@ def get_confirmed_head(
 
 *Note*: Computes the confirmed path and the lock as the deepest node in the
 confirmed path. Candidate nodes are selected from the FG frame, excluding
-genesis and nodes that conflict with a live lock.
+genesis and nodes that conflict with the highest live lock.
 
 ```python
 def compute_confirmed_lock(
     store: Store,
     tree: Sequence[ForkChoiceNode],
-    live_locks: set[ACLock],
+    highest_lock_node: ForkChoiceNode | None,
     confirmed: ForkChoiceNode,
     test_predicate: Callable[[ForkChoiceNode], bool],
 ) -> ForkChoiceNode | None:
@@ -818,7 +833,7 @@ def compute_confirmed_lock(
         for node in tree
         if is_ancestor(store, confirmed, node)
         and store.blocks[node.root].slot > GENESIS_SLOT
-        and not conflicts_with_lock(store, live_locks, node)
+        and not conflicts_with_lock(store, highest_lock_node, node)
         and test_predicate(node)
     }
 
@@ -835,7 +850,7 @@ selected node is the fast lock.
 def compute_fast_lock(
     store: Store,
     tree: Sequence[ForkChoiceNode],
-    live_locks: set[ACLock],
+    highest_lock_node: ForkChoiceNode | None,
     votes: set[ACVote],
     support_votes: set[ACVote],
     slot: Slot,
@@ -847,7 +862,7 @@ def compute_fast_lock(
     return compute_confirmed_lock(
         store=store,
         tree=tree,
-        live_locks=live_locks,
+        highest_lock_node=highest_lock_node,
         confirmed=confirmed,
         test_predicate=lambda node: (
             compute_non_equivocating_support_weight(store, votes, support_votes, slot, node)
@@ -871,7 +886,7 @@ The deepest such node is the slow lock.
 def compute_slow_lock(
     store: Store,
     tree: Sequence[ForkChoiceNode],
-    live_locks: set[ACLock],
+    highest_lock_node: ForkChoiceNode | None,
     slot: Slot,
     confirmed: ForkChoiceNode,
 ) -> ForkChoiceNode | None:
@@ -891,7 +906,7 @@ def compute_slow_lock(
     slow_lock = compute_confirmed_lock(
         store=store,
         tree=tree,
-        live_locks=live_locks,
+        highest_lock_node=highest_lock_node,
         confirmed=confirmed,
         test_predicate=lambda node: all(
             is_ancestor(store, store.saved_confirmations[Slot(j)], node) for j in previous_slots
@@ -924,6 +939,7 @@ def update_locks_and_confirmation(
     fg_frame: FGFrame,
     tree: Sequence[ForkChoiceNode],
     live_locks: set[ACLock],
+    highest_lock_node: ForkChoiceNode | None,
     confirmed: ForkChoiceNode,
     fast_lock: ForkChoiceNode | None,
     slow_lock: ForkChoiceNode | None,
@@ -932,7 +948,7 @@ def update_locks_and_confirmation(
     Record the candidate and separate fast and slow locks, even when confirmation is vetoed.
     """
     store.saved_confirmations[slot] = confirmed
-    vetoed = conflicts_with_lock(store, live_locks, confirmed)
+    vetoed = conflicts_with_lock(store, highest_lock_node, confirmed)
 
     locks = set()
     if fast_lock is not None:
@@ -984,10 +1000,10 @@ def record_head_vote_message(store: Store, message: HeadVoteMessage, vote: ACVot
 
 - Computes and records a confirmation candidate using all locally known votes
   for the slot and support resolved before the cutoff.
-- Updates the confirmed head only when no live lock conflicts with the
+- Updates the confirmed head only when the highest live lock does not veto the
   candidate.
-- Adds separate fast and slow locks on qualifying ancestors that conflict with
-  no live lock, even when the candidate itself is vetoed.
+- Adds separate fast and slow locks on qualifying ancestors not vetoed by the
+  highest live lock, even when the candidate itself is vetoed.
 
 ```python
 def update_confirmation(store: Store, slot: Slot) -> None:
@@ -1005,16 +1021,17 @@ def update_confirmation(store: Store, slot: Slot) -> None:
         return
 
     live_locks = get_live_locks(store, fg_frame, tree)
+    highest_lock_node = get_highest_live_lock_node(store, live_locks)
     fast_lock = compute_fast_lock(
         store=store,
         tree=tree,
-        live_locks=live_locks,
+        highest_lock_node=highest_lock_node,
         votes=votes,
         support_votes=support_votes,
         slot=slot,
         confirmed=confirmed,
     )
-    slow_lock = compute_slow_lock(store, tree, live_locks, slot, confirmed)
+    slow_lock = compute_slow_lock(store, tree, highest_lock_node, slot, confirmed)
 
     # Write updates to store
     update_locks_and_confirmation(
@@ -1023,6 +1040,7 @@ def update_confirmation(store: Store, slot: Slot) -> None:
         fg_frame,
         tree,
         live_locks,
+        highest_lock_node,
         confirmed,
         fast_lock,
         slow_lock,
