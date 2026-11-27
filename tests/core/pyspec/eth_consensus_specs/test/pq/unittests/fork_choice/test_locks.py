@@ -728,7 +728,7 @@ def test_pair_backed_declaration_matches_proposer_support(spec, tree, monkeypatc
             spec.compute_head_walk_score(store, merged, support, spec.Slot(10), nodes["B"])
             == expected
         )
-    assert spec.compute_head_walk_score(store, merged, support, spec.Slot(10), nodes["A"]) == 0
+        assert spec.compute_head_walk_score(store, merged, support, spec.Slot(10), nodes["A"]) == 0
     assert store.head_vote_messages == {10: messages}
     assert store.head_vote_message_receipt_times == receipts
     assert store.validated_head_votes == validated
