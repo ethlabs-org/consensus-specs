@@ -467,13 +467,14 @@ def compute_merged_view(
 
 ```python
 def get_head_votes_by_cutoff(
-    store: Store, slot: Slot, receipt_threshold_ms: Uint64, resolution_threshold_ms: Uint64
+    store: Store, slot: Slot, resolution_threshold_ms: Uint64
 ) -> tuple[set[ACVote], set[ACVote]]:
     """
-    Return the signed pool's vote set and supporting subset for ``slot``.
+    Return all signed pool votes for ``slot`` and the subset resolved before the
+    resolution threshold.
     """
     votes_from_messages = get_head_vote_messages_by_cutoff(
-        store, slot, receipt_threshold_ms, resolution_threshold_ms
+        store, slot, INFINITE_TIME_MS, resolution_threshold_ms
     )
     return compute_merged_view(store, votes_from_messages, (set(), set()))
 ```
@@ -1006,9 +1007,7 @@ def update_confirmation(store: Store, slot: Slot) -> None:
     support_cutoff_ms = (
         compute_time_at_slot_ms(store.genesis_time_ms, slot) + get_support_cutoff_ms()
     )
-    votes, support_votes = get_head_votes_by_cutoff(
-        store, slot, INFINITE_TIME_MS, support_cutoff_ms
-    )
+    votes, support_votes = get_head_votes_by_cutoff(store, slot, support_cutoff_ms)
     confirmed = get_confirmed_head(store, fg_frame, tree, votes, support_votes, slot)
 
     # Return if there is no confirmation
@@ -1342,9 +1341,7 @@ def get_head(store: Store) -> ForkChoiceNode:
 
     fg_frame = get_fg_frame(store)
     tree = get_subtree(store, fg_frame.finalized_node)
-    votes, support_votes = get_head_votes_by_cutoff(
-        store, slot, receipt_threshold_ms=INFINITE_TIME_MS, resolution_threshold_ms=INFINITE_TIME_MS
-    )
+    votes, support_votes = get_head_votes_by_cutoff(store, slot, INFINITE_TIME_MS)
     head = get_head_in_tree(
         store=store,
         fg_frame=fg_frame,

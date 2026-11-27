@@ -339,9 +339,7 @@ def test_unlock_at_threshold_moves_to_common_ancestor_preserving_fields(spec, tr
         spec.get_fg_frame(store),
         finalized_subtree(spec, store),
         spec.Slot(10),
-        *spec.get_head_votes_by_cutoff(
-            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
-        ),
+        *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
     assert store.locks == {replace(original, node=nodes["P"])}
 
@@ -357,9 +355,7 @@ def test_unlock_below_threshold_keeps_lock(spec, tree):
         spec.get_fg_frame(store),
         finalized_subtree(spec, store),
         spec.Slot(10),
-        *spec.get_head_votes_by_cutoff(
-            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
-        ),
+        *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
     assert store.locks == {original}
 
@@ -375,9 +371,7 @@ def test_unlock_does_not_move_same_or_newer_slot_lock(spec, tree, lock_slot):
         spec.get_fg_frame(store),
         finalized_subtree(spec, store),
         spec.Slot(10),
-        *spec.get_head_votes_by_cutoff(
-            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
-        ),
+        *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
     assert store.locks == {original}
 
@@ -396,9 +390,7 @@ def test_unlock_equivocators_count_without_resolved_votes(spec, tree):
         spec.get_fg_frame(store),
         finalized_subtree(spec, store),
         spec.Slot(10),
-        *spec.get_head_votes_by_cutoff(
-            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
-        ),
+        *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
     # Equivocating weight at the threshold opposes every ancestor, including F.
     assert store.locks == {replace(original, node=spec.get_fg_frame(store).finalized_node)}
@@ -418,9 +410,7 @@ def test_unlock_equivocator_not_counted_twice(spec, tree):
         spec.get_fg_frame(store),
         finalized_subtree(spec, store),
         spec.Slot(10),
-        *spec.get_head_votes_by_cutoff(
-            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
-        ),
+        *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
     assert store.locks == {original}
 
@@ -435,9 +425,7 @@ def test_unlock_counts_duplicate_committee_seats(spec, tree):
         spec.get_fg_frame(store),
         finalized_subtree(spec, store),
         spec.Slot(10),
-        *spec.get_head_votes_by_cutoff(
-            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
-        ),
+        *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
     assert store.locks == {replace(original, node=nodes["P"])}
 
@@ -455,9 +443,7 @@ def test_unlock_full_empty_conflict_moves_to_pending(spec, tree):
         spec.get_fg_frame(store),
         finalized_subtree(spec, store),
         spec.Slot(10),
-        *spec.get_head_votes_by_cutoff(
-            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
-        ),
+        *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
     pending = replace(nodes["A"], payload_status=spec.PAYLOAD_STATUS_PENDING)
     assert store.locks == {replace(original, node=pending)}
@@ -471,9 +457,7 @@ def test_unlock_removes_expired_locks(spec, tree):
         spec.get_fg_frame(store),
         finalized_subtree(spec, store),
         spec.Slot(10),
-        *spec.get_head_votes_by_cutoff(
-            store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
-        ),
+        *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
     )
     assert not store.locks
 
@@ -781,7 +765,7 @@ def test_proposer_support_follows_bits_when_both_resolve_locally(spec, tree):
     )
     assert merged_voters(spec, proposer_view) == ({0, 1, 2, 3}, {2, 3})
     infinite = spec.INFINITE_TIME_MS
-    local_view = spec.get_head_votes_by_cutoff(store, spec.Slot(10), infinite, infinite)
+    local_view = spec.get_head_votes_by_cutoff(store, spec.Slot(10), infinite)
     assert merged_voters(spec, local_view) == ({0, 1, 2, 3}, {0, 1, 2, 3})
 
 
@@ -1293,7 +1277,7 @@ def test_cross_branch_head_vote_identity(spec, tree):
             spec.validate_head_vote_gossip(seen, store, message, store.time_ms, {})
         spec.on_head_vote_message(store, message)
     infinite = spec.INFINITE_TIME_MS
-    votes, _ = spec.get_head_votes_by_cutoff(store, slot, infinite, infinite)
+    votes, _ = spec.get_head_votes_by_cutoff(store, slot, infinite)
     assert {vote.supported_node for vote in votes} == {nodes["P"], nodes["A"], nodes["B"]}
     assert spec.get_equivocating_pubkeys(votes) == {spec.XMSSPubkey(spec.xmss.SkToPk(1))}
     store.ac_tally_root = nodes["B"].root
