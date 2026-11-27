@@ -640,9 +640,11 @@ def compute_head_walk_score(
     """
     equivocating_pubkeys = get_equivocating_pubkeys(votes)
     equivocating_votes = {vote for vote in votes if vote.pubkey in equivocating_pubkeys}
-    return sum_head_vote_weights(
-        store, equivocating_votes, slot
-    ) + compute_non_equivocating_support_weight(store, votes, support_votes, slot, node)
+    equivocating_weight = sum_head_vote_weights(store, equivocating_votes, slot)
+    support_weight = compute_non_equivocating_support_weight(
+        store, votes, support_votes, slot, node
+    )
+    return equivocating_weight + support_weight
 ```
 
 #### New `is_eligible_for_head_walk`
