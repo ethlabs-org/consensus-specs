@@ -766,6 +766,31 @@ def test_pair_backed_marked_support_waits_for_payload(spec, tree):
     assert ready
 
 
+@pytest.mark.parametrize("head_slot", [10, 12])
+def test_pair_backed_marked_support_checks_declared_head_slot(spec, tree, head_slot):
+    store, nodes = tree
+    head = nodes["A1"]
+    store.blocks[head.root].slot = spec.Slot(head_slot)
+    store.block_states[head.root].validators.append(spec.Validator())
+    proposal = store.blocks[nodes["B1"].root]
+    proposal.slot = spec.Slot(11)
+    proposal.body.head_vote_declarations.append(
+        spec.HeadVoteDeclaration(
+            validator_index=0, beacon_block_root=head.root, payload_status=head.payload_status
+        )
+    )
+    proposal.body.head_vote_support_bits.append(True)
+    vote(spec, store, nodes["P"], 0)
+    vote(spec, store, nodes["A"], 0)
+
+    subtree = finalized_subtree(spec, store)
+    assert head in subtree
+    votes, support, ready = spec.get_declared_votes_and_readiness(store, subtree, spec.Slot(11))
+    assert {v.supported_node for v in votes} == {head}
+    assert not support
+    assert not ready
+
+
 def test_proposer_support_follows_bits_when_both_resolve_locally(spec, tree):
     store, nodes = tree
     propose_votes(spec, store, nodes, [(nodes["A"], [0, 1], False), (nodes["B"], [2, 3], True)])
@@ -1047,27 +1072,23 @@ def test_head_vote_receipt_respects_current_finalized_subtree(spec, tree):
     assert store.head_vote_messages[11] == [admitted]
 
 
-@pytest.mark.parametrize("status", [0, 1, 2])
 @pytest.mark.parametrize("in_frame", [False, True])
-def test_readiness_matches_proposer_support(spec, tree, status, in_frame):
+def test_matched_proposer_support_requires_frame_membership(spec, tree, in_frame):
     store, nodes = tree
     store.time_ms = at_slot(spec, 11)
-    proposal = store.blocks[nodes["B1"].root]
-    proposal.slot = spec.Slot(11)
     store.blocks[nodes["A"].root].slot = spec.Slot(10)
-    # The support is for an off-branch block in the vote's own slot.
     store.blocks[nodes["A1"].root].slot = spec.Slot(12)
-    store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
+    head = replace(nodes["A"], payload_status=spec.PAYLOAD_STATUS_PENDING)
+    propose_votes(spec, store, nodes, [(head, [0], True)])
     if not in_frame:
         store.finalized_checkpoint = spec.HeightCheckpoint(height=0, root=nodes["B"].root)
         store.justified_checkpoint = store.finalized_checkpoint.copy()
-    propose_votes(spec, store, nodes, [(replace(nodes["A"], payload_status=status), [0], True)])
-    usable = in_frame and status == spec.PAYLOAD_STATUS_PENDING
-    _, support, ready = spec.get_declared_votes_and_readiness(
+    votes, support, ready = spec.get_declared_votes_and_readiness(
         store, finalized_subtree(spec, store), spec.Slot(11)
     )
-    assert ready == usable
-    assert bool(support) == usable
+    assert {v.supported_node for v in votes} == {head}
+    assert {v.supported_node for v in support} == ({head} if in_frame else set())
+    assert ready == in_frame
 
 
 def test_genesis_deadline_vote(spec, tree):
@@ -1365,8 +1386,20 @@ def test_vote_resolution_enforces_status_in_both_arrival_orders(
         store, spec.Slot(11), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
     )
     assert view[1] == ([0] if valid else [])
-    tree_nodes = finalized_subtree(spec, store)
-    assert spec.is_usable_proposer_support(store, tree_nodes, data) == valid
+    proposal = store.blocks[nodes["B1"].root]
+    proposal.slot = spec.Slot(12)
+    proposal.body.head_vote_declarations.append(
+        spec.HeadVoteDeclaration(
+            validator_index=message.validator_index, beacon_block_root=root, payload_status=status
+        )
+    )
+    proposal.body.head_vote_support_bits.append(True)
+    votes, support, ready = spec.get_declared_votes_and_readiness(
+        store, finalized_subtree(spec, store), spec.Slot(12)
+    )
+    expected = {store.validated_head_votes[spec.hash_tree_root(message)]} if valid else set()
+    assert votes == support == expected
+    assert ready == valid
 
 
 def test_slow_lock_does_not_require_fast_threshold(spec, tree):

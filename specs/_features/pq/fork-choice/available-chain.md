@@ -27,7 +27,6 @@
     - [New `get_vote_resolution_time`](#new-get_vote_resolution_time)
     - [New `get_head_vote_messages_by_cutoff`](#new-get_head_vote_messages_by_cutoff)
     - [New `get_declared_votes_and_readiness`](#new-get_declared_votes_and_readiness)
-    - [New `is_usable_proposer_support`](#new-is_usable_proposer_support)
     - [New `compute_merged_view`](#new-compute_merged_view)
     - [New `get_head_votes_by_cutoff`](#new-get_head_votes_by_cutoff)
     - [New `get_equivocating_pubkeys`](#new-get_equivocating_pubkeys)
@@ -360,6 +359,10 @@ declared key back the declaration, regardless of current ticket counts. The
 declaration enters the view under its own head, with support if marked and
 usable. Its ticket evidence comes from the pool votes that back it.
 
+An exact match inherits the block-slot and payload-status checks from pool
+admission. A declaration backed by two other votes checks those conditions on
+its own head. Both paths require the supported node in the current frame.
+
 Early readiness requires backing for every declaration across current-slot
 proposals and usable heads for all marked declarations of at least one proposal.
 A timely vote held by the proposer can fall outside the receiver's admission
@@ -401,6 +404,7 @@ def get_declared_votes_and_readiness(
                 payload_status=declaration.payload_status,
             )
             vote = signed.get((index, hash_tree_root(data)))
+            matched = vote is not None
             if vote is None:
                 if data.beacon_block_root not in store.block_states:
                     all_held = False
@@ -426,29 +430,18 @@ def get_declared_votes_and_readiness(
                 )
             votes.add(vote)
             if marked:
-                if is_usable_proposer_support(store, tree, data):
+                usable = vote.supported_node in tree
+                if usable and not matched:
+                    block_slot = store.blocks[data.beacon_block_root].slot
+                    usable = block_slot <= vote_slot and (
+                        (block_slot == vote_slot) == (data.payload_status == PAYLOAD_STATUS_PENDING)
+                    )
+                if usable:
                     support.add(vote)
                 else:
                     ready = False
         ready_proposal |= ready
     return votes, support, all_held and ready_proposal
-```
-
-#### New `is_usable_proposer_support`
-
-```python
-def is_usable_proposer_support(
-    store: Store, tree: Sequence[ForkChoiceNode], data: HeadVoteData
-) -> bool:
-    node = ForkChoiceNode(root=data.beacon_block_root, payload_status=data.payload_status)
-    return (
-        node in tree
-        and store.blocks[node.root].slot <= data.slot
-        and (
-            (store.blocks[node.root].slot == data.slot)
-            == (data.payload_status == PAYLOAD_STATUS_PENDING)
-        )
-    )
 ```
 
 #### New `compute_merged_view`
