@@ -9,6 +9,7 @@ class PQSpecBuilder(BaseSpecBuilder):
     @classmethod
     def imports(cls, preset_name: str):
         return f"""
+from dataclasses import replace
 from typing import cast
 
 from eth_hash.auto import keccak as keccak256_hash

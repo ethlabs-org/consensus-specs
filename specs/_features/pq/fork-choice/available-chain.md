@@ -1132,11 +1132,17 @@ def is_valid_head_vote_signature(state: BeaconState, message: HeadVoteMessage) -
 
 *Note*: At the start of a slot, selects the proposal head using received and
 resolved P2P votes from the previous slot. Returns the head, declarations and
-support bits. The receipt and resolution thresholds are infinite, so whether a
-vote is support depends only on its data and the store, not on when the vote or
-its block was received. If the declaration cap is exceeded, votes by pubkeys
-with tickets in the current tally state, including their equivocation evidence,
-take priority. Within each priority group, declarations keep pool order.
+support bits. The proposal walk and its anchor use a temporary unlocked view;
+the node retains its original locks for voting. The receipt and resolution
+thresholds are infinite, so whether a vote is support depends only on its data
+and the store, not on when the vote or its block was received. If the
+declaration cap is exceeded, votes by pubkeys with tickets in the current tally
+state, including their equivocation evidence, take priority. Within each
+priority group, declarations keep pool order.
+
+See
+[the Lean proposal construction](https://github.com/ethlabs-org/verified-consensus/commit/43a5db7af687087aad91520567199df476404743)
+for the corresponding read-only proposal step.
 
 ```python
 def get_ac_proposal(
@@ -1160,9 +1166,10 @@ def get_ac_proposal(
     votes, support_votes = compute_merged_view(
         store, (vote_messages, support_indices), (set(), set())
     )
-    unlock(store, fg_frame, tree, current_slot - 1, votes, support_votes)
+    proposal_store = replace(store)
+    unlock(proposal_store, fg_frame, tree, current_slot - 1, votes, support_votes)
     head = get_head_in_tree(
-        store=store,
+        store=proposal_store,
         fg_frame=fg_frame,
         tree=tree,
         walk_tree=tree,

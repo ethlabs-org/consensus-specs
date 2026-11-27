@@ -623,23 +623,25 @@ def test_ac_vote_head_keeps_payload_restriction(spec, tree):
     assert spec.get_ac_vote_head(store) == nodes["A1"]
 
 
-@pytest.mark.parametrize("proposal", [False, True])
-def test_duty_unlock_uses_its_view(spec, tree, proposal):
+@pytest.mark.parametrize("late", [False, True])
+def test_proposal_unlock_does_not_change_vote_locks(spec, tree, late):
     store, nodes = tree
     original = lock(spec, nodes["A"])
     store.locks = {original}
-    late = at_slot(spec, 10) + spec.get_view_freeze_ms()
+    received = at_slot(spec, 10) + spec.get_view_freeze_ms() if late else None
     for validator in range(spec.HEAD_VOTE_UNLOCK_THRESHOLD):
-        vote(spec, store, nodes["B"], validator, received=late)
+        vote(spec, store, nodes["B"], validator, received=received)
     store.time_ms = at_slot(spec, 11)
-    if proposal:
-        head, _, _ = spec.get_ac_proposal(store)
-        assert head == nodes["B"]
-        assert store.locks == {replace(original, node=nodes["P"])}
-    else:
-        spec.on_tick(store, store.time_ms + spec.get_head_vote_due_ms())
-        assert spec.get_ac_vote_head(store) == nodes["A"]
-        assert store.locks == {original}
+    non_proposer = replace(store)
+
+    head, _, _ = spec.get_ac_proposal(store)
+    assert head == nodes["B"]
+    assert store.locks == non_proposer.locks == {original}
+
+    for voter in (store, non_proposer):
+        spec.on_tick(voter, voter.time_ms + spec.get_head_vote_due_ms())
+        assert spec.get_ac_vote_head(voter) == nodes["A" if late else "B"]
+        assert voter.locks == {original if late else replace(original, node=nodes["P"])}
 
 
 def test_proposal_declaration_cap_prioritizes_weighted_voters(spec, tree):
