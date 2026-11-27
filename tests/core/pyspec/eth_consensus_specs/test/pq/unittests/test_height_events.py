@@ -54,6 +54,29 @@ def state_at(spec, height, justified_height, finalized_height, slot_offset=0):
 
 
 @pytest.mark.parametrize(
+    ("scores", "expected"),
+    [((4, 4, 4), True), ((8, 4, 4), False), ((4, 4, 8), True), ((65536,) * 3, False)],
+)
+def test_weighted_quorum_at_exact_boundary(spec, scores, expected):
+    state = spec.BeaconState()
+    for score in scores:
+        state.validators.append(
+            spec.Validator(
+                effective_balance=spec.MAX_EFFECTIVE_BALANCE_ELECTRA,
+                exit_epoch=spec.FAR_FUTURE_EPOCH,
+            )
+        )
+        state.inactivity_scores.append(score)
+    participation = spec.HeightParticipation(data=[spec.Boolean(value=i < 2) for i in range(3)])
+    # Compare against the previous unbounded formula, including its zero guard.
+    full = int(spec.EJECTION_INACTIVITY_SCORE) ** 2
+    weights = [2048 * (full - min(score**2, full)) for score in scores]
+    participating = sum(weights[:2])
+    assert (participating > 0 and participating * 3 >= sum(weights) * 2) == expected
+    assert spec.has_quorum(state, participation) == expected
+
+
+@pytest.mark.parametrize(
     ("justified_height", "finalized_height", "justifies"),
     [
         # The previous height is justified and not finalized
