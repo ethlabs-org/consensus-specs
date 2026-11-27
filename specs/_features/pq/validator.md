@@ -457,9 +457,10 @@ Set `block.body.attestations` to aggregates selected from the FG attestation
 pool, up to `MAX_ATTESTATIONS_PQ`. Each aggregate must satisfy the verification
 conditions in
 [`process_attestation`](./beacon-chain.md#modified-process_attestation),
-including its round and committee encoding. Only attestations for the current or
-the previous target of `state` are valid. An attestation for the previous target
-adds only pending-finality participation and pays the proposer nothing; a
+including its round and committee encoding. Only attestations for the current
+target of `state`, and for its previous target with a finality pair that names a
+pending justification of `state`, are valid. An attestation for the previous
+target adds only pending-finality participation and pays the proposer nothing; a
 proposer should include such aggregates when places are left after the
 aggregates that add target, progress or pending-finality participation for the
 current target. Attestations with the same data signed in different rounds are

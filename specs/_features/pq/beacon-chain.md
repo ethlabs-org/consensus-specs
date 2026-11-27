@@ -278,10 +278,11 @@ validator sits on the attestation committee given by its index modulo
 slots of a round, moving by at most one slot from round to round. In every
 round, an active validator casts its FG attestation in its committee's slot. A
 block includes attestations for the chain's current target, and for its previous
-target, which count only toward pending justifications. Their bits are laid out
-in the committees of the target's epoch, so an aggregate keeps one encoding for
-as long as it can be included. Rewards and inactivity are settled at the end of
-each round, in `process_round`.
+target whose finality pair names a pending justification, which count only
+toward that justification. Their bits are laid out in the committees of the
+target's epoch, so an aggregate keeps one encoding for as long as it can be
+included. Rewards and inactivity are settled at the end of each round, in
+`process_round`.
 
 A validator earns the progress flag for a target vote or a timeout at the
 current height, and the finality flag for a finality pair of a pending
@@ -1846,13 +1847,16 @@ def is_well_formed_attestation_data(data: AttestationData) -> bool:
 ```python
 def is_valid_attestation_data(state: BeaconState, data: AttestationData) -> bool:
     """
-    Check if ``data`` names the current or the previous target checkpoint of
-    ``state``.
+    Check if ``data`` names the current target checkpoint of ``state``, or
+    names its previous target checkpoint with a pending finality pair.
     """
     # [Modified in PQ:EIP8453]
     # Only votes for the current or the previous target are included
-    return data.target == state.target_checkpoint or is_previous_target_attestation_data(
-        state, data
+    if data.target == state.target_checkpoint:
+        return True
+    # A vote for the previous target counts only through a pending finality pair
+    return is_previous_target_attestation_data(state, data) and any(
+        pending.checkpoint == data.finality for pending in state.pending_finality
     )
 ```
 
@@ -3346,12 +3350,12 @@ at the height, and the finality flag whenever a finality pair counts for a
 pending justification and the validator does not yet have it in the round. Both
 count toward the round in which the attestation is included. Only attestations
 for the current or the previous target are included, and only signers that are
-active are counted. An attestation for the previous target counts only toward
-the participation of the pending justification its finality pair names, and
-credits no flag or reward. An attestation carries no signature, so
-`process_stark` verifies the signatures of all attestations in the block
-instead. Its `round` only selects the XMSS leaf of those signatures, which
-cannot be of a future round.
+active are counted. An attestation for the previous target is included only if
+its finality pair names a pending justification, counts only toward that
+justification's participation, and credits no flag or reward. An attestation
+carries no signature, so `process_stark` verifies the signatures of all
+attestations in the block instead. Its `round` only selects the XMSS leaf of
+those signatures, which cannot be of a future round.
 
 ```python
 def process_attestation(state: BeaconState, attestation: Attestation) -> None:

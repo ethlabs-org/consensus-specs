@@ -91,6 +91,43 @@ def test_previous_target_counts_only_for_pending_finality(spec, state):
     assert state.balances == before.balances
 
 
+def test_previous_target_with_pending_pair_is_valid(spec, state):
+    data = spec.AttestationData(
+        target=state.previous_target_checkpoint, timeout=False, finality=checkpoint(spec, 1, 1)
+    )
+    assert spec.is_valid_attestation_data(state, data)
+
+
+@pytest.mark.parametrize(
+    "finality",
+    [
+        lambda spec: checkpoint(spec, 1, 9),  # the pending height with another root
+        lambda spec: spec.HeightCheckpoint.empty(),  # no finality pair
+    ],
+)
+def test_previous_target_without_pending_pair_is_invalid(spec, state, finality):
+    data = spec.AttestationData(
+        target=state.previous_target_checkpoint, timeout=False, finality=finality(spec)
+    )
+    assert spec.is_well_formed_attestation_data(data)
+    assert not spec.is_valid_attestation_data(state, data)
+    with pytest.raises(AssertionError):
+        spec.process_attestation(state, full_attestation(spec, state, data))
+
+
+def test_current_target_without_pending_pair_is_valid(spec, state):
+    data = spec.AttestationData(
+        target=state.target_checkpoint, timeout=False, finality=checkpoint(spec, 1, 9)
+    )
+    assert spec.is_valid_attestation_data(state, data)
+    before = state.copy()
+    spec.process_attestation(state, full_attestation(spec, state, data))
+    # Progress and target count; the pending justification does not
+    assert state.progress_participation != before.progress_participation
+    assert state.target_participation != before.target_participation
+    assert state.pending_finality == before.pending_finality
+
+
 def test_current_target_still_credits_flags(spec, state):
     data = spec.AttestationData(
         target=state.target_checkpoint, timeout=False, finality=checkpoint(spec, 1, 1)
