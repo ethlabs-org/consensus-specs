@@ -525,9 +525,7 @@ def get_viable_ancestor(
 ancestor so that a later change to the FG frame cannot restore the old node.
 
 ```python
-def get_live_locks(
-    store: Store, fg_frame: FGFrame, tree: Sequence[ForkChoiceNode], time_ms: Uint64
-) -> set[ACLock]:
+def get_live_locks(store: Store, fg_frame: FGFrame, tree: Sequence[ForkChoiceNode]) -> set[ACLock]:
     """
     Return unexpired locks in the frame, each moved to its viable ancestor.
     """
@@ -541,7 +539,7 @@ def get_live_locks(
         )
         for lock in store.locks
         if lock.node in tree
-        and time_ms < compute_time_at_slot_ms(store.genesis_time_ms, lock.expiry_slot + 1)
+        and store.time_ms < compute_time_at_slot_ms(store.genesis_time_ms, lock.expiry_slot + 1)
     }
 ```
 
@@ -676,7 +674,7 @@ def get_head_walk_anchor(
     """
     return get_deepest_node(
         store,
-        {lock.node for lock in get_live_locks(store, fg_frame, finalized_subtree, store.time_ms)}
+        {lock.node for lock in get_live_locks(store, fg_frame, finalized_subtree)}
         | {fg_frame.forkchoice_root},
     )
 ```
@@ -923,7 +921,7 @@ def add_locks(
     Add locks, remove expired or out-of-frame locks, and store their viable ancestors.
     """
     store.locks |= locks
-    store.locks = get_live_locks(store, fg_frame, tree, store.time_ms)
+    store.locks = get_live_locks(store, fg_frame, tree)
 ```
 
 #### New `update_locks_and_confirmation`
@@ -1015,7 +1013,7 @@ def update_confirmation(store: Store, slot: Slot) -> None:
         store.saved_confirmations.pop(slot, None)
         return
 
-    live_locks = get_live_locks(store, fg_frame, tree, store.time_ms)
+    live_locks = get_live_locks(store, fg_frame, tree)
     fast_lock = compute_fast_lock(
         store=store,
         tree=tree,
@@ -1072,7 +1070,7 @@ def unlock(
         return sum_head_vote_weights(store, opposing_votes, slot) >= HEAD_VOTE_UNLOCK_THRESHOLD
 
     locks = set()
-    for lock in get_live_locks(store, fg_frame, tree, store.time_ms):
+    for lock in get_live_locks(store, fg_frame, tree):
         node = lock.node
         if lock.vote_slot < slot:
             fallback_path = {

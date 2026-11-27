@@ -225,7 +225,7 @@ def get_ac_frame(store: Store) -> ForkChoiceNode | None:
     viable_subtree = get_viable_subtree(store, fg_frame, tree)
     candidates = {
         lock.node
-        for lock in get_live_locks(store, fg_frame, tree, store.time_ms)
+        for lock in get_live_locks(store, fg_frame, tree)
         if lock.fast and current_slot <= lock.vote_slot + 2 and lock.node in viable_subtree
     }
     if len(candidates) == 0:

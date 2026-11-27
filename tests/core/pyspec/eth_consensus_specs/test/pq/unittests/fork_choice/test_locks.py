@@ -175,9 +175,7 @@ def test_fast_expiry_ignores_ineligible_locks(spec, tree, kind):
     store.locks = {existing}
     assert (
         spec.compute_fast_lock_expiry(
-            spec.get_live_locks(
-                store, spec.get_fg_frame(store), finalized_subtree(spec, store), store.time_ms
-            ),
+            spec.get_live_locks(store, spec.get_fg_frame(store), finalized_subtree(spec, store)),
             spec.Slot(10),
         )
         == 12
@@ -190,7 +188,7 @@ def test_fast_expiry_counts_lock_moved_to_finalized(spec, tree):
     store.locks = {lock(spec, frame.finalized_node, expiry=12)}
     assert (
         spec.compute_fast_lock_expiry(
-            spec.get_live_locks(store, frame, finalized_subtree(spec, store), store.time_ms),
+            spec.get_live_locks(store, frame, finalized_subtree(spec, store)),
             spec.Slot(10),
         )
         == 14
@@ -275,19 +273,14 @@ def test_expiry_at_slot_start(spec, tree):
     store, nodes = tree
     store.locks = {lock(spec, nodes["A"], expiry=12)}
     frame = spec.get_fg_frame(store)
-    assert (
-        len(
-            spec.get_live_locks(store, frame, finalized_subtree(spec, store), at_slot(spec, 13) - 1)
-        )
-        == 1
-    )
-    assert not spec.get_live_locks(store, frame, finalized_subtree(spec, store), at_slot(spec, 13))
-    assert not spec.get_live_locks(
-        store,
-        frame,
-        finalized_subtree(spec, store),
-        at_slot(spec, 13) + spec.get_head_vote_due_ms(),
-    )
+    subtree = finalized_subtree(spec, store)
+    boundary = at_slot(spec, 13)
+    store.time_ms = boundary - 1
+    assert len(spec.get_live_locks(store, frame, subtree)) == 1
+    store.time_ms = boundary
+    assert not spec.get_live_locks(store, frame, subtree)
+    store.time_ms = boundary + 1
+    assert not spec.get_live_locks(store, frame, subtree)
 
 
 def test_live_locks_move_to_viable_ancestor_and_stay_there(spec, tree):
@@ -297,20 +290,16 @@ def test_live_locks_move_to_viable_ancestor_and_stay_there(spec, tree):
     full_frame = spec.get_fg_frame(store)
     frame = replace(full_frame, viable_heads={nodes["B"]})
     moved = replace(original, node=nodes["P"])
-    assert spec.get_live_locks(store, frame, finalized_subtree(spec, store), store.time_ms) == {
-        moved
-    }
+    assert spec.get_live_locks(store, frame, finalized_subtree(spec, store)) == {moved}
     assert spec.get_head_walk_anchor(store, frame, finalized_subtree(spec, store)) == nodes["P"]
     assert not spec.conflicts_with_lock(
         store,
-        spec.get_live_locks(store, frame, finalized_subtree(spec, store), store.time_ms),
+        spec.get_live_locks(store, frame, finalized_subtree(spec, store)),
         nodes["B"],
     )
     # Even an empty lock update must store the moved node.
     spec.add_locks(store, frame, finalized_subtree(spec, store), set())
-    assert spec.get_live_locks(
-        store, full_frame, finalized_subtree(spec, store), store.time_ms
-    ) == {moved}
+    assert spec.get_live_locks(store, full_frame, finalized_subtree(spec, store)) == {moved}
 
 
 def test_anchor_uses_frame_root_when_lock_is_its_ancestor(spec, tree):
@@ -322,7 +311,7 @@ def test_anchor_uses_frame_root_when_lock_is_its_ancestor(spec, tree):
     assert spec.get_head_walk_anchor(store, frame, finalized_subtree(spec, store)) == nodes["A"]
     assert not spec.conflicts_with_lock(
         store,
-        spec.get_live_locks(store, frame, finalized_subtree(spec, store), store.time_ms),
+        spec.get_live_locks(store, frame, finalized_subtree(spec, store)),
         nodes["A1"],
     )
 
