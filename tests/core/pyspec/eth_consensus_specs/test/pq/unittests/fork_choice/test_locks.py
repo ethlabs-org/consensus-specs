@@ -452,6 +452,52 @@ def test_equivocators_do_not_supply_fast_lock_support(spec, tree):
     assert not store.locks
 
 
+@pytest.mark.parametrize(("clean_weight", "expected"), [(5, None), (6, "A1"), (0, "finalized")])
+def test_confirmed_head_matches_majority_walk(spec, tree, clean_weight, expected):
+    store, nodes = tree
+    if expected == "finalized":
+        store.finalized_checkpoint = spec.HeightCheckpoint(height=0, root=nodes["A1"].root)
+        store.justified_checkpoint = store.finalized_checkpoint.copy()
+    finalized = spec.get_fg_frame(store).finalized_node
+    subtree = finalized_subtree(spec, store)
+    if expected == "finalized":
+        slot = store.blocks[finalized.root].slot
+        vote(spec, store, finalized, 0, slot=slot)
+    else:
+        slot = spec.Slot(10)
+        vote(spec, store, nodes["A1"], 0, weight=clean_weight)
+        vote(spec, store, nodes["A1"], 1, weight=2)
+        vote(spec, store, nodes["B1"], 1, weight=4)
+        vote(spec, store, nodes["B1"], 2, weight=1)
+    votes, support = spec.get_head_votes_by_cutoff(store, slot, spec.INFINITE_TIME_MS)
+    support = {v for v in support if v.supported_node != nodes["B1"]}
+    equivocators = spec.get_equivocating_pubkeys(votes)
+    total = spec.sum_head_vote_weights(store, votes, slot)
+
+    def clean_support(node):
+        return {v for v in support if spec.is_ancestor(store, v.supported_node, node)}
+
+    def score(node):
+        return spec.sum_head_vote_weights(
+            store, {v for v in clean_support(node) if v.pubkey not in equivocators}, slot
+        )
+
+    def has_majority(node):
+        return 2 * score(node) > total
+
+    old_head = spec.compute_ghost_head(store, finalized, subtree, score, has_majority)
+    old_head = old_head if has_majority(old_head) else None
+    expected_head = finalized if expected == "finalized" else nodes.get(expected)
+    assert (
+        spec.get_confirmed_head(store, subtree, votes, support, slot) == old_head == expected_head
+    )
+
+    equivocations = {v for v in votes if v.pubkey in equivocators}
+    for node in subtree:
+        old_score = spec.sum_head_vote_weights(store, equivocations | clean_support(node), slot)
+        assert spec.compute_head_walk_score(store, votes, support, slot, node) == old_score
+
+
 @pytest.mark.parametrize(
     ("confirmed_name", "head_name", "expected_name"),
     [("A1", "A", "A"), ("A", "A1", "A"), ("A1", "B1", "P")],

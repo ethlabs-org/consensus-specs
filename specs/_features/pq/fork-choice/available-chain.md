@@ -40,7 +40,7 @@
     - [New `get_head_walk_anchor`](#new-get_head_walk_anchor)
     - [New `get_head_in_tree`](#new-get_head_in_tree)
     - [New `get_voter_subtree`](#new-get_voter_subtree)
-    - [New `compute_confirmation_score`](#new-compute_confirmation_score)
+    - [New `compute_non_equivocating_support_weight`](#new-compute_non_equivocating_support_weight)
     - [New `get_confirmed_head`](#new-get_confirmed_head)
     - [New `compute_confirmed_lock`](#new-compute_confirmed_lock)
     - [New `compute_fast_lock`](#new-compute_fast_lock)
@@ -621,14 +621,13 @@ def compute_head_walk_score(
     node: ForkChoiceNode,
 ) -> Uint64:
     """
-    Return the sum of the equivocating score and the node's supporting score.
+    Return equivocator weight plus the node's non-equivocating support weight.
     """
     equivocating_pubkeys = get_equivocating_pubkeys(votes)
-    scoring_votes = {vote for vote in votes if vote.pubkey in equivocating_pubkeys}
-    scoring_votes |= {
-        vote for vote in support_votes if is_ancestor(store, vote.supported_node, node)
-    }
-    return sum_head_vote_weights(store, scoring_votes, slot)
+    equivocating_votes = {vote for vote in votes if vote.pubkey in equivocating_pubkeys}
+    return sum_head_vote_weights(
+        store, equivocating_votes, slot
+    ) + compute_non_equivocating_support_weight(store, votes, support_votes, slot, node)
 ```
 
 #### New `is_eligible_for_head_walk`
@@ -741,14 +740,13 @@ def get_voter_subtree(
     ]
 ```
 
-#### New `compute_confirmation_score`
+#### New `compute_non_equivocating_support_weight`
 
-*Note*: The confirmation score counts the committee seats of non-equivocating
-validators whose votes are in support votes set and support the node or one of
-its descendants. Equivocating validators contribute no support.
+*Note*: Counts the ticket weight of non-equivocating validators whose support
+votes name the node or one of its descendants.
 
 ```python
-def compute_confirmation_score(
+def compute_non_equivocating_support_weight(
     store: Store,
     votes: set[ACVote],
     support_votes: set[ACVote],
@@ -756,7 +754,7 @@ def compute_confirmation_score(
     node: ForkChoiceNode,
 ) -> Uint64:
     """
-    Return confirmation score of the ``node``.
+    Return the non-equivocating support weight of ``node``.
     """
     equivocating_pubkeys = get_equivocating_pubkeys(votes)
     return sum_head_vote_weights(
@@ -773,43 +771,29 @@ def compute_confirmation_score(
 
 #### New `get_confirmed_head`
 
-*Note*: Runs a confirmation walk using the confirmation score, requiring
-eligible nodes to score more than half the participating tickets. Returns `None`
-if the resulting head is ineligible, including when the walk stops at the
-finalized node.
+*Note*: Nodes with a strict majority of participating tickets form a single
+chain: non-equivocating support cannot extend two conflicting nodes.
 
 ```python
 def get_confirmed_head(
     store: Store,
-    fg_frame: FGFrame,
     tree: Sequence[ForkChoiceNode],
     votes: set[ACVote],
     support_votes: set[ACVote],
     slot: Slot,
 ) -> ForkChoiceNode | None:
     """
-    Return the confirmation candidate, or ``None`` if no node has sufficient support.
+    Return the deepest node with a strict majority of participating tickets,
+    or ``None`` if no node has sufficient support.
     """
     voting_seats_count = sum_head_vote_weights(store, votes, slot)
-
-    def is_eligible(node: ForkChoiceNode) -> bool:
-        return (
-            2 * compute_confirmation_score(store, votes, support_votes, slot, node)
-            > voting_seats_count
-        )
-
-    head = compute_ghost_head(
-        store=store,
-        anchor=fg_frame.finalized_node,
-        tree=tree,
-        get_score=lambda node: compute_confirmation_score(store, votes, support_votes, slot, node),
-        is_eligible=is_eligible,
-    )
-
-    if is_eligible(head):
-        return head
-    else:
-        return None
+    candidates = {
+        node
+        for node in tree
+        if 2 * compute_non_equivocating_support_weight(store, votes, support_votes, slot, node)
+        > voting_seats_count
+    }
+    return get_deepest_node(store, candidates) if candidates else None
 ```
 
 #### New `compute_confirmed_lock`
@@ -866,7 +850,7 @@ def compute_fast_lock(
         live_locks=live_locks,
         confirmed=confirmed,
         test_predicate=lambda node: (
-            compute_confirmation_score(store, votes, support_votes, slot, node)
+            compute_non_equivocating_support_weight(store, votes, support_votes, slot, node)
             >= HEAD_VOTE_FAST_LOCK_THRESHOLD
         ),
     )
@@ -1013,7 +997,7 @@ def update_confirmation(store: Store, slot: Slot) -> None:
         compute_time_at_slot_ms(store.genesis_time_ms, slot) + get_support_cutoff_ms()
     )
     votes, support_votes = get_head_votes_by_cutoff(store, slot, support_cutoff_ms)
-    confirmed = get_confirmed_head(store, fg_frame, tree, votes, support_votes, slot)
+    confirmed = get_confirmed_head(store, tree, votes, support_votes, slot)
 
     # Return if there is no confirmation
     if confirmed is None:
