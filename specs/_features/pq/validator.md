@@ -1078,8 +1078,9 @@ or the previous target of the inclusion state, and only if its round is no later
 than `get_current_round(state)`. An aggregate for the previous target also needs
 a finality pair that names a pending justification of the inclusion state, so it
 can stop being includable when that justification is finalized or dropped (see
-[Attestations](#attestations) above). Its encoding stays valid for that whole
-time, since the committees depend only on the epoch of the target.
+[Attestations](#attestations) above). Its committee encoding stays valid while
+its target remains the current or the previous target, since the committees
+depend only on the epoch of the target.
 
 ### Sync committees
 
