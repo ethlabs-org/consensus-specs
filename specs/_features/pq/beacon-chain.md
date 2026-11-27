@@ -228,7 +228,7 @@
       - [New `is_previous_height_justified`](#new-is_previous_height_justified)
       - [New `process_height_events`](#new-process_height_events)
       - [New `advance_dynasty`](#new-advance_dynasty)
-      - [New `compute_ac_next_snapshot_index`](#new-compute_ac_next_snapshot_index)
+      - [New `compute_next_ac_snapshot_index`](#new-compute_next_ac_snapshot_index)
       - [New `update_ac_snapshots`](#new-update_ac_snapshots)
       - [New `is_dynasty_ready_to_advance`](#new-is_dynasty_ready_to_advance)
       - [New `advance_height`](#new-advance_height)
@@ -2919,7 +2919,7 @@ def process_ac_snapshot_seed_update(state: BeaconState) -> None:
     if not is_last_ac_snapshot_dynasty(state.dynasty):
         return
     epoch = get_current_epoch(state)
-    snapshot = state.ac_snapshots[compute_ac_next_snapshot_index(state.dynasty)]
+    snapshot = state.ac_snapshots[compute_next_ac_snapshot_index(state.dynasty)]
     if epoch == snapshot.seed_epoch:
         snapshot.seed = get_randao_mix(state, snapshot.seed_epoch)
 ```
@@ -4111,12 +4111,12 @@ def advance_dynasty(state: BeaconState) -> None:
     state.dynasty_start_slot = state.slot
 ```
 
-##### New `compute_ac_next_snapshot_index`
+##### New `compute_next_ac_snapshot_index`
 
 The ring entry that will become active at the next rollover.
 
 ```python
-def compute_ac_next_snapshot_index(dynasty: Dynasty) -> Uint64:
+def compute_next_ac_snapshot_index(dynasty: Dynasty) -> Uint64:
     return (Uint64(dynasty // AC_SNAPSHOT_CYCLE_LENGTH) + 2) % 3
 ```
 
@@ -4131,7 +4131,7 @@ append-only on descendants of the capture block.
 def update_ac_snapshots(state: BeaconState) -> None:
     epoch = get_current_epoch(state)
     snapshots = state.ac_snapshots
-    snapshots[compute_ac_next_snapshot_index(state.dynasty)] = ACSnapshot(
+    snapshots[compute_next_ac_snapshot_index(state.dynasty)] = ACSnapshot(
         weights=get_ac_weights(state, epoch), seed=Bytes32(), seed_epoch=epoch + 1
     )
 ```
@@ -4148,7 +4148,7 @@ def is_dynasty_ready_to_advance(state: BeaconState) -> bool:
         return False
 
     if is_last_ac_snapshot_dynasty(state.dynasty):
-        snapshot = state.ac_snapshots[compute_ac_next_snapshot_index(state.dynasty)]
+        snapshot = state.ac_snapshots[compute_next_ac_snapshot_index(state.dynasty)]
         return compute_epoch_at_slot(state.finalized_slot) > snapshot.seed_epoch
     return True
 ```
