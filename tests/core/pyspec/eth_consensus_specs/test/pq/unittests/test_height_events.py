@@ -55,7 +55,13 @@ def state_at(spec, height, justified_height, finalized_height, slot_offset=0):
 
 @pytest.mark.parametrize(
     ("scores", "expected"),
-    [((4, 4, 4), True), ((8, 4, 4), False), ((4, 4, 8), True), ((65536,) * 3, False)],
+    [
+        ((4, 4, 4), True),
+        ((8, 4, 4), False),
+        ((4, 4, 8), True),
+        ((65536,) * 3, False),
+        ((2**64 - 1, 4, 4), False),
+    ],
 )
 def test_weighted_quorum_at_exact_boundary(spec, scores, expected):
     state = spec.BeaconState()

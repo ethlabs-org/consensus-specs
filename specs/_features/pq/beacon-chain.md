@@ -159,7 +159,6 @@
     - [New `get_validator_weight`](#new-get_validator_weight)
     - [New `get_total_weight`](#new-get_total_weight)
     - [New `get_participating_weight`](#new-get_participating_weight)
-    - [New `scale_fg_weight`](#new-scale_fg_weight)
     - [Modified `get_finality_delay`](#modified-get_finality_delay)
     - [New `get_round_base_reward`](#new-get_round_base_reward)
     - [New `get_flag_index_rewards`](#new-get_flag_index_rewards)
@@ -796,7 +795,6 @@ adversarial votes.
 | ------------------------------- | -------------------------- |
 | `MIN_ROUNDS_TO_INACTIVITY_LEAK` | `Round(2**4)` (= 16)       |
 | `EJECTION_INACTIVITY_SCORE`     | `Uint64(2**16)` (= 65,536) |
-| `FG_WEIGHT_RADIX`               | `Uint64(2**32)`            |
 
 ### XMSS
 
@@ -2057,13 +2055,13 @@ def has_quorum(state: BeaconState, participation: HeightParticipation) -> bool:
     """
     Check if the validators marked in ``participation`` hold at least two
     thirds of the total weight of the active validators.
+    Math safe up to ~1.4B ETH of total effective balance (1,431,655,765
+    increments), bounded by three times the maximum participating weight.
     """
     active_indices = set(get_active_validator_indices(state, get_current_epoch(state)))
     participating_weight = get_participating_weight(state, participation)
     total_weight = get_total_weight(state, active_indices)
-    return participating_weight != (0, 0) and scale_fg_weight(
-        participating_weight, Uint64(3)
-    ) >= scale_fg_weight(total_weight, Uint64(2))
+    return participating_weight > 0 and participating_weight * 3 >= total_weight * 2
 ```
 
 #### Modified `is_in_inactivity_leak`
@@ -2491,37 +2489,29 @@ def get_validator_weight(state: BeaconState, index: ValidatorIndex) -> Uint64:
     """
     increments = Uint64(state.validators[index].effective_balance // EFFECTIVE_BALANCE_INCREMENT)
     inactivity_score = min(state.inactivity_scores[index], EJECTION_INACTIVITY_SCORE)
-    inactivity_weight = (EJECTION_INACTIVITY_SCORE - inactivity_score) * (
-        EJECTION_INACTIVITY_SCORE + inactivity_score
+    inactivity_weight = (
+        EJECTION_INACTIVITY_SCORE * EJECTION_INACTIVITY_SCORE - inactivity_score * inactivity_score
     )
     return increments * inactivity_weight
 ```
 
 #### New `get_total_weight`
 
-*Note*: Represent aggregate weight as `(high, low)` in base `FG_WEIGHT_RADIX`,
-with `low` less than the radix. At the registry limit, `high` is at most
-`2**51`.
-
 ```python
-def get_total_weight(state: BeaconState, indices: set[ValidatorIndex]) -> tuple[Uint64, Uint64]:
+def get_total_weight(state: BeaconState, indices: set[ValidatorIndex]) -> Uint64:
     """
     Return the combined weight of the ``indices``.
     """
-    high, low = Uint64(0), Uint64(0)
+    total_weight = Uint64(0)
     for index in indices:
-        low += get_validator_weight(state, index)
-        high += low // FG_WEIGHT_RADIX
-        low %= FG_WEIGHT_RADIX
-    return high, low
+        total_weight += get_validator_weight(state, index)
+    return total_weight
 ```
 
 #### New `get_participating_weight`
 
 ```python
-def get_participating_weight(
-    state: BeaconState, participation: HeightParticipation
-) -> tuple[Uint64, Uint64]:
+def get_participating_weight(state: BeaconState, participation: HeightParticipation) -> Uint64:
     """
     Return the combined weight of the active and unslashed validators marked in
     ``participation``.
@@ -2531,18 +2521,6 @@ def get_participating_weight(
         if participation[index] and not state.validators[index].slashed:
             participating_indices.add(index)
     return get_total_weight(state, participating_indices)
-```
-
-#### New `scale_fg_weight`
-
-*Note*: Quorum scaling by two or three preserves the normalized pair, so pairs
-compare in numeric order. The scaled high word is at most `3 * 2**51`.
-
-```python
-def scale_fg_weight(weight: tuple[Uint64, Uint64], factor: Uint64) -> tuple[Uint64, Uint64]:
-    high, low = weight
-    low *= factor
-    return high * factor + low // FG_WEIGHT_RADIX, low % FG_WEIGHT_RADIX
 ```
 
 #### Modified `get_finality_delay`
