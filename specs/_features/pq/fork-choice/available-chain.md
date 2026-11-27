@@ -1042,7 +1042,7 @@ def update_confirmation(store: Store, slot: Slot) -> None:
 
 *Note*: Equivocators count as opposition to every node. Other validators count
 when their resolved vote supports a conflicting node. Count each validator's
-maximum applicable ticket weight. Only locks from before the vote slot can move.
+maximum applicable ticket weight.
 
 ```python
 def unlock(
@@ -1054,7 +1054,7 @@ def unlock(
     support_votes: set[ACVote],
 ) -> None:
     """
-    Move older locks using the supplied vote and support view.
+    Move live locks using the supplied vote and support view.
     """
     equivocating_pubkeys = get_equivocating_pubkeys(votes)
 
@@ -1071,18 +1071,16 @@ def unlock(
 
     locks = set()
     for lock in get_live_locks(store, fg_frame, tree):
-        node = lock.node
-        if lock.vote_slot < slot:
-            fallback_path = {
-                ancestor
-                for ancestor in tree
-                if is_ancestor(store, node, ancestor) and not reaches_unlock_threshold(ancestor)
-            }
-            node = (
-                get_deepest_node(store, fallback_path)
-                if len(fallback_path) > 0
-                else fg_frame.finalized_node
-            )
+        fallback_path = {
+            ancestor
+            for ancestor in tree
+            if is_ancestor(store, lock.node, ancestor) and not reaches_unlock_threshold(ancestor)
+        }
+        node = (
+            get_deepest_node(store, fallback_path)
+            if len(fallback_path) > 0
+            else fg_frame.finalized_node
+        )
         locks.add(
             ACLock(
                 node=node, vote_slot=lock.vote_slot, fast=lock.fast, expiry_slot=lock.expiry_slot

@@ -348,22 +348,6 @@ def test_unlock_below_threshold_keeps_lock(spec, tree):
     assert store.locks == {original}
 
 
-@pytest.mark.parametrize("lock_slot", [10, 11])
-def test_unlock_does_not_move_same_or_newer_slot_lock(spec, tree, lock_slot):
-    store, nodes = tree
-    original = lock(spec, nodes["A"], slot=lock_slot)
-    store.locks = {original}
-    vote(spec, store, nodes["B"], 0, weight=spec.HEAD_VOTE_UNLOCK_THRESHOLD)
-    spec.unlock(
-        store,
-        spec.get_fg_frame(store),
-        finalized_subtree(spec, store),
-        spec.Slot(10),
-        *spec.get_head_votes_by_cutoff(store, spec.Slot(10), spec.INFINITE_TIME_MS),
-    )
-    assert store.locks == {original}
-
-
 def test_unlock_equivocators_count_without_resolved_votes(spec, tree):
     store, nodes = tree
     original = lock(spec, nodes["A"])
