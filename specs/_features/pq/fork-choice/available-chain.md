@@ -19,6 +19,7 @@
     - [New `get_ac_vote`](#new-get_ac_vote)
     - [New `get_ac_tally_state`](#new-get_ac_tally_state)
     - [New `get_ac_vote_validator_index`](#new-get_ac_vote_validator_index)
+    - [New `compute_ac_opening_weight`](#new-compute_ac_opening_weight)
     - [New `compute_ac_vote_weight`](#new-compute_ac_vote_weight)
     - [New `has_ac_admission_ticket`](#new-has_ac_admission_ticket)
     - [New `sum_head_vote_weights`](#new-sum_head_vote_weights)
@@ -139,8 +140,9 @@ def get_view_freeze_ms() -> Uint64:
 
 #### New `ACVote`
 
-*Note*: Represents an individual AC vote in a form suitable for set operations,
-including deduplication and merging votes from messages and blocks.
+*Note*: The slot, signing key and head identify the logical vote. Ticket
+openings are evidence from authenticated pool messages, separate from that
+identity.
 
 ```python
 @dataclass(eq=True, frozen=True)
@@ -148,8 +150,7 @@ class ACVote:
     slot: Slot
     pubkey: XMSSPubkey
     supported_node: ForkChoiceNode
-    vrf_root: Root
-    secret: Bytes32
+    ticket_openings: frozenset[tuple[Root, Bytes32]] = field(compare=False)
 ```
 
 #### New `get_ac_vote`
@@ -166,8 +167,7 @@ def get_ac_vote(state: BeaconState, message: HeadVoteMessage) -> ACVote:
         slot=data.slot,
         pubkey=validator.pubkey,
         supported_node=supported_node,
-        vrf_root=validator.vrf_root,
-        secret=message.proof[0],
+        ticket_openings=frozenset({(validator.vrf_root, message.proof[0])}),
     )
 ```
 
@@ -192,11 +192,25 @@ The voted head authenticated the key and opening; the tally state's registry
 supplies the index for the lottery when both the key and commitment match.
 
 ```python
-def get_ac_vote_validator_index(state: BeaconState, vote: ACVote) -> ValidatorIndex | None:
+def get_ac_vote_validator_index(
+    state: BeaconState, pubkey: XMSSPubkey, vrf_root: Root
+) -> ValidatorIndex | None:
     for index, validator in enumerate(state.validators):
-        if validator.pubkey == vote.pubkey:
-            return ValidatorIndex(index) if validator.vrf_root == vote.vrf_root else None
+        if validator.pubkey == pubkey:
+            return ValidatorIndex(index) if validator.vrf_root == vrf_root else None
     return None
+```
+
+#### New `compute_ac_opening_weight`
+
+```python
+def compute_ac_opening_weight(
+    state: BeaconState, pubkey: XMSSPubkey, slot: Slot, vrf_root: Root, secret: Bytes32
+) -> Uint64:
+    index = get_ac_vote_validator_index(state, pubkey, vrf_root)
+    if index is None:
+        return Uint64(0)
+    return compute_ac_ticket_weight(state.ac_snapshots, state.dynasty, slot, index, secret)
 ```
 
 #### New `compute_ac_vote_weight`
@@ -204,35 +218,35 @@ def get_ac_vote_validator_index(state: BeaconState, vote: ACVote) -> ValidatorIn
 The tally uses its current dynasty, even for a vote from the preceding slot.
 With the same snapshot history, adjacent dynasties replace the draws for
 `HEAD_VOTE_SEATS_PER_DYNASTY` seat indices. Each version of each lane has one
-ticket in expectation.
+ticket in expectation. A pair-backed declaration takes the maximum weight of its
+backing openings, as when a tally counts an equivocator once.
 
 ```python
 def compute_ac_vote_weight(state: BeaconState, vote: ACVote) -> Uint64:
-    index = get_ac_vote_validator_index(state, vote)
-    if index is None:
-        return Uint64(0)
-    return compute_ac_ticket_weight(
-        state.ac_snapshots, state.dynasty, vote.slot, index, vote.secret
+    return max(
+        compute_ac_opening_weight(state, vote.pubkey, vote.slot, vrf_root, secret)
+        for vrf_root, secret in vote.ticket_openings
     )
 ```
 
 #### New `has_ac_admission_ticket`
 
-Check the local tally state's current and previous lotteries for the signed
-slot. A previous-only winner can propagate without contributing to a current
-tally.
+Check the local tally state's current and previous lotteries for a vote from a
+signed message, which has one opening. A previous-only winner can propagate
+without contributing to a current tally.
 
 ```python
 def has_ac_admission_ticket(state: BeaconState, vote: ACVote) -> bool:
-    index = get_ac_vote_validator_index(state, vote)
+    ((vrf_root, secret),) = vote.ticket_openings
+    index = get_ac_vote_validator_index(state, vote.pubkey, vrf_root)
     if index is None:
         return False
     return compute_ac_ticket_weight(
-        state.ac_snapshots, state.dynasty, vote.slot, index, vote.secret
+        state.ac_snapshots, state.dynasty, vote.slot, index, secret
     ) > 0 or (
         state.dynasty > 0
         and compute_ac_ticket_weight(
-            state.ac_snapshots, state.dynasty - 1, vote.slot, index, vote.secret
+            state.ac_snapshots, state.dynasty - 1, vote.slot, index, secret
         )
         > 0
     )
@@ -240,8 +254,8 @@ def has_ac_admission_ticket(state: BeaconState, vote: ACVote) -> bool:
 
 #### New `sum_head_vote_weights`
 
-Each vote supports its signed head. When an equivocation rule counts a voter
-once in a tally, use the maximum weight of that voter's applicable votes.
+Each vote names one head. When an equivocation rule counts a voter once in a
+tally, use the maximum weight of that voter's applicable votes.
 
 ```python
 def sum_head_vote_weights(
@@ -343,9 +357,10 @@ def get_head_vote_messages_by_cutoff(
 
 #### New `get_declared_votes_and_readiness`
 
-*Note*: Readiness checks for an exact authenticated vote or two distinct votes
-by the declared validator, regardless of their current ticket counts. The two
-votes enter the view as equivocation evidence without proposer support.
+*Note*: An exact authenticated vote or two distinct authenticated votes by the
+declared key back the declaration, regardless of current ticket counts. The
+declaration enters the view under its own head, with support if marked and
+usable. Its ticket evidence comes from the pool votes that back it.
 
 ```python
 def get_declared_votes_and_readiness(
@@ -383,15 +398,28 @@ def get_declared_votes_and_readiness(
             )
             vote = signed.get((index, hash_tree_root(data)))
             if vote is None:
-                evidence: set[ACVote] = set()
-                if data.beacon_block_root in store.block_states:
-                    state = get_block_state(store, data.beacon_block_root)
-                    if index < len(state.validators):
-                        evidence = by_pubkey.get(state.validators[index].pubkey, set())
-                all_held &= len(evidence) == 2
-                if len(evidence) == 2:
-                    votes.update(evidence)
-                continue
+                if data.beacon_block_root not in store.block_states:
+                    all_held = False
+                    continue
+                state = get_block_state(store, data.beacon_block_root)
+                if index >= len(state.validators):
+                    all_held = False
+                    continue
+                pubkey = state.validators[index].pubkey
+                evidence = by_pubkey.get(pubkey, set())
+                if len(evidence) != 2:
+                    all_held = False
+                    continue
+                vote = ACVote(
+                    slot=vote_slot,
+                    pubkey=pubkey,
+                    supported_node=ForkChoiceNode(
+                        root=data.beacon_block_root, payload_status=data.payload_status
+                    ),
+                    ticket_openings=frozenset(
+                        opening for witness in evidence for opening in witness.ticket_openings
+                    ),
+                )
             votes.add(vote)
             if marked:
                 if is_usable_proposer_support(store, tree, data):
@@ -438,8 +466,9 @@ def get_votes_declared_in_proposals(
 
 #### New `compute_merged_view`
 
-*Note*: Merges views from P2P messages and blocks into sets of single AC votes,
-deduplicating votes and combining their support.
+*Note*: Merges votes by their logical identity and combines their support. An
+exact pool match supplies the same ticket evidence in both views. Pair backing
+uses the declaration only when the exact vote is absent from the pool.
 
 ```python
 def compute_merged_view(

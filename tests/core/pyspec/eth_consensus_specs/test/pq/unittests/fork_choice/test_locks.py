@@ -31,14 +31,14 @@ def finalized_subtree(spec, store):
 @pytest.fixture
 def tree(spec, monkeypatch):
     # Lock tests can specify exact ticket counts; authenticated votes use the sampler.
-    compute_weight = spec.compute_ac_vote_weight
+    compute_weight = spec.compute_ac_opening_weight
 
-    def compute_vote_weight(state, vote):
-        if vote.vrf_root == spec.Root():
-            return spec.bytes_to_uint64(vote.secret[:8])
-        return compute_weight(state, vote)
+    def compute_opening_weight(state, pubkey, slot, vrf_root, secret):
+        if vrf_root == spec.Root():
+            return spec.bytes_to_uint64(secret[:8])
+        return compute_weight(state, pubkey, slot, vrf_root, secret)
 
-    monkeypatch.setattr(spec, "compute_ac_vote_weight", compute_vote_weight)
+    monkeypatch.setattr(spec, "compute_ac_opening_weight", compute_opening_weight)
     # F -- P -- A -- A1
     #       \-- B -- B1
     blocks = {}
@@ -115,8 +115,7 @@ def vote(spec, store, node, validator, slot=10, received=None, weight=1):
         slot=message.data.slot,
         pubkey=spec.XMSSPubkey(validator.to_bytes(32, "little")),
         supported_node=node,
-        vrf_root=spec.Root(),
-        secret=spec.Bytes32(weight.to_bytes(32, "little")),
+        ticket_openings=frozenset({(spec.Root(), spec.Bytes32(weight.to_bytes(32, "little")))}),
     )
 
 
@@ -684,43 +683,68 @@ def test_declarations_keep_individual_support_bits(spec, tree):
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {0, 1, 2})
 
 
-def test_equivocation_holds_declaration_without_creating_vote_weight(spec, tree):
+def test_pair_backed_declaration_matches_proposer_support(spec, tree):
     store, nodes = tree
     store.time_ms = at_slot(spec, 11)
     propose_votes(spec, store, nodes, [(nodes["B"], [0], True)])
     store.block_states[nodes["B"].root].validators.append(spec.Validator())
-    # Another ready proposal cannot excuse an unheld declaration.
-    store.blocks[nodes["A1"].root].slot = spec.Slot(11)
+    subtree = finalized_subtree(spec, store)
+    proposer_view = spec.get_votes_declared_in_proposals(store, subtree, spec.Slot(11))
     store.head_vote_messages.clear()
     store.head_vote_message_receipt_times.clear()
-    vote(spec, store, nodes["P"], 0)
-    assert not spec.is_ac_vote_ready(store, finalized_subtree(spec, store))
-    assert spec.get_votes_declared_in_proposals(
-        store, finalized_subtree(spec, store), spec.Slot(11)
-    ) == (set(), set())
+    store.validated_head_votes.clear()
     freeze = at_slot(spec, 10) + spec.get_view_freeze_ms()
-    vote(spec, store, nodes["A"], 0, received=freeze)
+    vote(spec, store, nodes["P"], 0, received=freeze, weight=3)
+    assert not spec.is_ac_vote_ready(store, subtree)
+    vote(spec, store, nodes["A"], 0, received=freeze, weight=2)
+    messages = list(store.head_vote_messages[10])
     receipts = dict(store.head_vote_message_receipt_times)
-    assert spec.is_ac_vote_ready(store, finalized_subtree(spec, store))
-    proposer_view = spec.get_votes_declared_in_proposals(
+    validated = dict(store.validated_head_votes)
+    assert spec.is_ac_vote_ready(store, subtree)
+    assert spec.get_ac_vote_head(store) is not None
+    voter_view = spec.get_votes_declared_in_proposals(store, subtree, spec.Slot(11))
+    local_view = spec.get_head_vote_messages_by_cutoff(store, spec.Slot(10), freeze, freeze)
+    merged, support = spec.compute_merged_view(store, local_view, voter_view)
+    assert (merged, support) == proposer_view
+    assert not spec.get_equivocating_pubkeys(merged)
+    assert {v.supported_node for v in support} == {nodes["B"]}
+    assert spec.compute_head_walk_score(store, merged, support, spec.Slot(10), nodes["B"]) == 3
+    assert spec.compute_head_walk_score(store, merged, support, spec.Slot(10), nodes["A"]) == 0
+    assert store.head_vote_messages == {10: messages}
+    assert store.head_vote_message_receipt_times == receipts
+    assert store.validated_head_votes == validated
+    assert not store.pending_head_votes
+    _, declarations, bits = spec.get_ac_proposal(store)
+    assert [d.beacon_block_root for d in declarations] == [nodes["P"].root, nodes["A"].root]
+    assert [bool(bit) for bit in bits] == [True, True]
+
+
+def test_pair_backed_marked_support_waits_for_payload(spec, tree):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11)
+    full = replace(nodes["B"], payload_status=spec.PAYLOAD_STATUS_FULL)
+    propose_votes(spec, store, nodes, [(full, [0], True)])
+    store.block_states[nodes["B"].root].validators.append(spec.Validator())
+    store.head_vote_messages.clear()
+    store.head_vote_message_receipt_times.clear()
+    store.validated_head_votes.clear()
+    vote(spec, store, nodes["P"], 0)
+    vote(spec, store, nodes["A"], 0)
+    votes, support, ready = spec.get_declared_votes_and_readiness(
         store, finalized_subtree(spec, store), spec.Slot(11)
     )
-    assert {v.supported_node for v in proposer_view[0]} == {nodes["P"], nodes["A"]}
-    assert not proposer_view[1]
-    local_view = spec.get_head_vote_messages_by_cutoff(store, spec.Slot(10), freeze, freeze)
-    merged, support = spec.compute_merged_view(store, local_view, proposer_view)
-    assert spec.get_equivocating_pubkeys(merged) == {spec.XMSSPubkey()}
-    assert {v.supported_node for v in support} == {nodes["P"]}
-    assert store.head_vote_message_receipt_times == receipts
-    unknown = spec.Root(b"\x99" * 32)
-    vote(spec, store, replace(nodes["B"], root=unknown), 1)
-    _, declarations, bits = spec.get_ac_proposal(store)
-    assert [d.beacon_block_root for d in declarations] == [
-        nodes["P"].root,
-        nodes["A"].root,
-        unknown,
-    ]
-    assert [bool(bit) for bit in bits] == [True, True, False]
+    assert {v.supported_node for v in votes} == {full}
+    assert not support
+    assert not ready
+    assert spec.get_ac_vote_head(store) is None
+
+    store.payloads[full.root] = spec.ExecutionPayloadEnvelope()
+    store.payload_receipt_times[full.root] = store.time_ms
+    votes, support, ready = spec.get_declared_votes_and_readiness(
+        store, finalized_subtree(spec, store), spec.Slot(11)
+    )
+    assert {v.supported_node for v in support} == {full}
+    assert ready
 
 
 def test_proposer_support_follows_bits_when_both_resolve_locally(spec, tree):
