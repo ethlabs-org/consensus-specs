@@ -137,6 +137,26 @@ def test_fast_expiry_grows_and_is_capped(spec, tree):
     assert expiries == list(range(12, 73, 2)) + [73, 74]
 
 
+@pytest.mark.parametrize("expiry", [10, 11, 41])
+def test_fast_expiry_matches_previous_rule_at_cutoff(spec, tree, expiry):
+    store, nodes = tree
+    slot = spec.Slot(10)
+    store.time_ms = at_slot(spec, slot + 1) - 1
+    store.locks = {lock(spec, nodes["A"], expiry=expiry)}
+    vote(spec, store, nodes["A"], 0, slot=slot, weight=spec.HEAD_VOTE_FAST_LOCK_THRESHOLD)
+
+    # At the cutoff, a lock expiring in the vote slot has already expired.
+    previous_expiry = slot + 2
+    if expiry > slot:
+        previous_expiry = min(
+            slot + spec.SLOW_LOCK_WINDOW, max(slot + 2, expiry + spec.FAST_LOCK_EXTENSION)
+        )
+    spec.on_tick(store, at_slot(spec, slot + 1) + spec.get_support_cutoff_ms())
+    assert {item for item in store.locks if item.vote_slot == slot} == {
+        lock(spec, nodes["A"], slot=slot, expiry=previous_expiry)
+    }
+
+
 def test_fast_expiry_paper_example_and_gap(spec, tree, monkeypatch):
     store, nodes = tree
     monkeypatch.setattr(spec, "SLOW_LOCK_WINDOW", spec.Slot(6))

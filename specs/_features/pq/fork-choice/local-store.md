@@ -387,8 +387,9 @@ duty timestamps only from its current wall-clock slot, in order, before
 advancing to its wall time. It skips all duties in earlier slots, including when
 catching up from an old anchor: it must not call this handler for those
 historical duty timestamps. Within the current slot, the first physical tick at
-or after a deadline dispatches that duty with its scheduled timestamp. Queued
-early votes carry their authenticated data into the slot and are weighed at use.
+or after a deadline dispatches that duty with its scheduled timestamp. Callers
+must not dispatch the same scheduled timestamp more than once. Queued early
+votes carry their authenticated data into the slot and are weighed at use.
 
 ```python
 def on_tick(store: Store, time_ms: Uint64) -> None:

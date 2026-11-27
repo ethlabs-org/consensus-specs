@@ -576,16 +576,16 @@ def conflicts_with_lock(
 
 #### New `compute_fast_lock_expiry`
 
-*Note*: Scheduled confirmation writes locks in vote-slot order, so every live
-fast lock at this update comes from an earlier vote slot. A lock moved to the
-finalized node still contributes.
+*Note*: At the update for vote slot `slot`, the store clock is in `slot + 1`, so
+each live lock expires in `slot + 1` or later. A lock moved to the finalized
+node still contributes.
 
 ```python
 def compute_fast_lock_expiry(live_locks: set[ACLock], slot: Slot) -> Slot:
     expiries = {lock.expiry_slot for lock in live_locks if lock.fast}
     if len(expiries) == 0:
         return slot + 2
-    return min(slot + SLOW_LOCK_WINDOW, max(slot + 2, max(expiries) + FAST_LOCK_EXTENSION))
+    return min(slot + SLOW_LOCK_WINDOW, max(expiries) + FAST_LOCK_EXTENSION)
 ```
 
 #### New `compute_ghost_head`
