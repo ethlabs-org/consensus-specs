@@ -433,8 +433,8 @@ proposer's VRF proof for `block.slot`.
 
 Set `block.body.head_vote_declarations` and `block.body.head_vote_support_bits`
 to the declarations and support bits returned by
-[`get_ac_proposal`](./available-chain.md#new-get_ac_proposal). The vote slot is
-`block.slot - 1`.
+[`get_ac_proposal`](./fork-choice/available-chain.md#new-get_ac_proposal). The
+vote slot is `block.slot - 1`.
 
 Independently select up to `MAX_HEAD_VOTES` signed aggregates that satisfy
 [`process_head_vote`](./beacon-chain.md#new-process_head_vote). Include votes
@@ -649,8 +649,8 @@ receipts and at `get_head_vote_due_ms()` into the slot, even if none of its
 validators belongs to the head vote committee. Early preparation requires all
 eligible declarations across current-slot proposals in the FG tree to be held,
 and all marked eligible heads of at least one such proposal to be usable (see
-[`is_ac_vote_ready`](./available-chain.md#new-is_ac_vote_ready)). At the
-deadline the node prepares with the held declarations, omitting the rest.
+[`is_ac_vote_ready`](./fork-choice/available-chain.md#new-is_ac_vote_ready)). At
+the deadline the node prepares with the held declarations, omitting the rest.
 Preparation caches one head per slot and unlocks using the frozen local view
 merged with current proposals. When a new prepared head becomes available,
 assigned validators immediately sign, process locally and broadcast their vote
@@ -717,10 +717,11 @@ assigned slot and staggered committee schedule.
 #### Attestation data
 
 First, obtain `source` from
-[`get_ac_frame(store)`](./finality-gadget.md#new-get_ac_frame) at or after the
-support cutoff. The `source` is the deepest viable effective live fast-lock node
-whose vote slot is at least the current slot minus two. Slow locks do not
-provide FG sources. If `source` is `None`, the validator does not attest.
+[`get_ac_frame(store)`](./fork-choice/finality-gadget.md#new-get_ac_frame) at or
+after the support cutoff. The `source` is the deepest viable effective live
+fast-lock node whose vote slot is at least the current slot minus two. Slow
+locks do not provide FG sources. If `source` is `None`, the validator does not
+attest.
 
 Let `source_state` be the state after processing `source`:
 

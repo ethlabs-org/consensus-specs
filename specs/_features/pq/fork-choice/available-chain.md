@@ -8,7 +8,6 @@
 - [Constants](#constants)
   - [Time](#time)
 - [Configs](#configs)
-  - [Time parameters](#time-parameters)
   - [Misc](#misc)
 - [Helpers](#helpers)
   - [New `ACLock`](#new-aclock)
@@ -71,7 +70,7 @@
 ## Introduction
 
 The available chain uses the shared
-[fork-choice store](./fork-choice.md#modified-store) and the
+[fork-choice store](./local-store.md#modified-store) and the
 [FG frame](./finality-gadget.md#new-get_fg_frame). Its fast locks supply the
 [FG source](./finality-gadget.md#new-get_ac_frame).
 
@@ -85,13 +84,8 @@ The available chain uses the shared
 
 ## Configs
 
-### Time parameters
-
-| Name                 | Value          | Duration                  |
-| -------------------- | -------------- | ------------------------- |
-| `HEAD_VOTE_DUE_BPS`  | `Uint64(2500)` | 25% of `SLOT_DURATION_MS` |
-| `SUPPORT_CUTOFF_BPS` | `Uint64(5000)` | 50% of `SLOT_DURATION_MS` |
-| `VIEW_FREEZE_BPS`    | `Uint64(7500)` | 75% of `SLOT_DURATION_MS` |
+Slot timing uses the
+[fork-choice time parameters](./local-store.md#time-parameters).
 
 ### Misc
 

@@ -278,15 +278,15 @@ The fork is triggered at epoch `PQ_FORK_EPOCH`.
 When its clock reaches the start of the fork slot, and before it runs any PQ
 fork choice handler, gossip validation or duty, a node converts its EIP-8483
 fork choice store with
-[`upgrade_store_to_pq`](./fork-choice.md#new-upgrade_store_to_pq). Its justified
-and finalized checkpoints become the last finalized Casper FFG checkpoint at
-height 0, matching the upgraded state. It keeps its blocks and their
-post-states, and the post-states of blocks before the fork stay EIP-8483 states.
-PQ fork choice, gossip and duties read stored states through
-[`get_block_state`](./fork-choice.md#new-get_block_state), which upgrades an
-EIP-8483 state with `get_upgraded_state`. A block, execution payload envelope or
-payload attestation for a block before the fork that arrives after the
-conversion is processed with the EIP-8483 rules against the block's EIP-8483
+[`upgrade_store_to_pq`](./fork-choice/local-store.md#new-upgrade_store_to_pq).
+Its justified and finalized checkpoints become the last finalized Casper FFG
+checkpoint at height 0, matching the upgraded state. It keeps its blocks and
+their post-states, and the post-states of blocks before the fork stay EIP-8483
+states. PQ fork choice, gossip and duties read stored states through
+[`get_block_state`](./fork-choice/local-store.md#new-get_block_state), which
+upgrades an EIP-8483 state with `get_upgraded_state`. A block, execution payload
+envelope or payload attestation for a block before the fork that arrives after
+the conversion is processed with the EIP-8483 rules against the block's EIP-8483
 state. Nodes stop serving and validating the EIP-8483 gossip topics at the
 conversion, since EIP-8483 gossip validation reads EIP-8483 fork choice
 checkpoints, and fetch blocks and execution payload envelopes from before the
@@ -320,11 +320,11 @@ The AC bootstrap captures eligible weight from registered validators at the
 fork. For a vote on a pre-fork head, the head's upgraded state authenticates the
 voter and opening. The receiver checks admission against the current and
 previous dynasties of its
-[tally state](./available-chain.md#new-get_ac_tally_state) and counts weight in
-its current dynasty only. Before the first accepted PQ block, that state is the
-upgraded finalized state, which can have a different bootstrap lottery from the
-voted head. Proposer and payload timeliness committee lookahead retain their own
-requirements during epoch processing.
+[tally state](./fork-choice/available-chain.md#new-get_ac_tally_state) and
+counts weight in its current dynasty only. Before the first accepted PQ block,
+that state is the upgraded finalized state, which can have a different bootstrap
+lottery from the voted head. Proposer and payload timeliness committee lookahead
+retain their own requirements during epoch processing.
 
 ```python
 def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:

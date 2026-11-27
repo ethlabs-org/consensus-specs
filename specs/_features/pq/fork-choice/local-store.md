@@ -1,10 +1,12 @@
-# PQ -- Fork Choice
+# PQ -- Fork Choice Local Store
 
 *Note*: This document is a work-in-progress for researchers and implementers.
 
 <!-- mdformat-toc start --slug=github --no-anchors --maxlevel=6 --minlevel=2 -->
 
 - [Introduction](#introduction)
+- [Configs](#configs)
+  - [Time parameters](#time-parameters)
 - [Helpers](#helpers)
   - [Modified `Store`](#modified-store)
   - [Modified `get_forkchoice_store`](#modified-get_forkchoice_store)
@@ -34,8 +36,6 @@
 
 ## Introduction
 
-This is the modification of the fork-choice accompanying the PQ upgrade.
-
 The fork choice of Gloas is replaced by that of EIP-8453. The store follows the
 finality gadget (FG) through the beacon state and runs the available chain (AC)
 on head votes.
@@ -60,6 +60,16 @@ late with the EIP-8483 state transition.
 - [Available chain](./available-chain.md): head voting, confirmation and locks.
 - [Finality gadget](./finality-gadget.md): fork-choice viability and FG source
   selection.
+
+## Configs
+
+### Time parameters
+
+| Name                 | Value          | Duration                  |
+| -------------------- | -------------- | ------------------------- |
+| `HEAD_VOTE_DUE_BPS`  | `Uint64(2500)` | 25% of `SLOT_DURATION_MS` |
+| `SUPPORT_CUTOFF_BPS` | `Uint64(5000)` | 50% of `SLOT_DURATION_MS` |
+| `VIEW_FREEZE_BPS`    | `Uint64(7500)` | 75% of `SLOT_DURATION_MS` |
 
 ## Helpers
 

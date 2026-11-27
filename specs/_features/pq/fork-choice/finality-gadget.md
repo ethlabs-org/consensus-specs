@@ -24,7 +24,7 @@
 The finality gadget supplies the viable frame for the
 [available chain](./available-chain.md) and reads
 [AC locks](./available-chain.md#new-get_live_locks) for the FG source. Both use
-the shared [fork-choice store](./fork-choice.md#modified-store).
+the shared [fork-choice store](./local-store.md#modified-store).
 
 ## Helpers
 
