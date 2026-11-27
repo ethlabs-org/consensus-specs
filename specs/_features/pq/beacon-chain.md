@@ -711,15 +711,19 @@ the weights still equals `WEIGHT_DENOMINATOR`.
 
 ### Finality gadget
 
-| Name                      | Value                |
-| ------------------------- | -------------------- |
-| `PENDING_FINALITY_WINDOW` | `Uint64(2**1)` (= 2) |
+| Name                      | Value                   |
+| ------------------------- | ----------------------- |
+| `PENDING_FINALITY_WINDOW` | `Uint64(2**1)` (= 2)    |
+| `DEEP_FG_SOURCE_SLOTS`    | `Slot(2**10)` (= 1,024) |
 
 *Note*: `PENDING_FINALITY_WINDOW` must be at least 2. The FG client reads its
 finality pair from the pending justifications of the state in which its source
 entered the height. When the previous height is not justified, it offers the
 newest pending justification its signing record permits, and an older one when
 the record rules out the newest, so the state keeps the older one too.
+
+*Note*: The mainnet value of `DEEP_FG_SOURCE_SLOTS` is experimental. It is not a
+certified production healing bound for PQ.
 
 ### Rounds
 

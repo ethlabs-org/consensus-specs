@@ -70,7 +70,7 @@
 
 The available chain uses the shared
 [fork-choice store](./local-store.md#modified-store) and the
-[FG frame](./finality-gadget.md#new-get_fg_frame). Its fast locks supply the
+[FG frame](./finality-gadget.md#new-get_fg_frame). Its live locks anchor the
 [FG source](./finality-gadget.md#new-get_ac_frame).
 
 ## Constants

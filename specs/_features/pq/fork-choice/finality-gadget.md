@@ -207,8 +207,10 @@ def update_finality(store: Store, state: BeaconState) -> None:
 
 *Notes*: At or after the support cutoff, returns the FG confirmation node. It is
 the deepest viable effective live fast-lock node whose vote slot is at least the
-current slot minus two, or `None` if no such node exists. Slow locks do not
-provide FG sources.
+current slot minus two. Otherwise it is the deepest viable non-genesis ancestor
+of the highest effective live lock (including that lock itself) accepted locally
+by the start of the slot `DEEP_FG_SOURCE_SLOTS` ago. Time before joining,
+restart, or fork activation does not count. With no such node, return `None`.
 
 The AC frame is used by validators at scheduled FG duties. Each duty reads the
 currently eligible source; publication is deduplicated by each validator's
@@ -223,12 +225,27 @@ def get_ac_frame(store: Store) -> ForkChoiceNode | None:
     fg_frame = get_fg_frame(store)
     tree = get_subtree(store, fg_frame.finalized_node)
     viable_subtree = get_viable_subtree(store, fg_frame, tree)
+    live_locks = get_live_locks(store, fg_frame, tree)
     candidates = {
         lock.node
-        for lock in get_live_locks(store, fg_frame, tree)
+        for lock in live_locks
         if lock.fast and current_slot <= lock.vote_slot + 2 and lock.node in viable_subtree
     }
-    if len(candidates) == 0:
+    if candidates:
+        return get_deepest_node(store, candidates)
+
+    anchor = get_highest_live_lock_node(store, live_locks)
+    if anchor is None or current_slot < DEEP_FG_SOURCE_SLOTS:
         return None
-    return get_deepest_node(store, candidates)
+    cutoff = compute_time_at_slot_ms(store.genesis_time_ms, current_slot - DEEP_FG_SOURCE_SLOTS)
+    if store.deep_since_ms > cutoff:
+        return None
+    deep = {
+        node
+        for node in viable_subtree
+        if store.blocks[node.root].slot > GENESIS_SLOT
+        and is_ancestor(store, anchor, node)
+        and get_block_and_payload_receipt_time(store, node) <= cutoff
+    }
+    return get_deepest_node(store, deep) if deep else None
 ```

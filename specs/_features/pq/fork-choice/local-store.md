@@ -46,7 +46,9 @@ aggregates in a block carry no signature, and `process_stark` proves their
 signatures; they count only for builder payments. Head vote declarations carry
 no signature and are used only if the store holds the signed vote.
 
-Joining and restart handling are left to clients, outside these handlers.
+Joining and restart handling are left to clients, outside these handlers. Before
+serving duties after joining or restarting, set `deep_since_ms` to the current
+wall-clock time in milliseconds, even when restoring a saved store.
 
 At the fork, a node converts its EIP-8483 store with `upgrade_store_to_pq`. The
 store keeps the blocks and post-states it holds, and the post-states of blocks
@@ -108,6 +110,7 @@ class Store:
     payload_data_availability_vote: dict[Root, list[Boolean | None]]
     # [New in PQ:EIP8453]
     max_height: Height
+    deep_since_ms: Uint64
     block_receipt_times: dict[Root, Uint64]
     payload_receipt_times: dict[Root, Uint64]
     latest_confirmed: ForkChoiceNode
@@ -154,6 +157,7 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
         payload_data_availability_vote={anchor_root: [None] * PTC_SIZE},
         # [New in PQ:EIP8453]
         max_height=anchor_height,
+        deep_since_ms=time_ms,
         block_receipt_times={anchor_root: time_ms},
         payload_receipt_times={},
         latest_confirmed=ForkChoiceNode(
@@ -198,6 +202,7 @@ def upgrade_store_to_pq(pre: eip8483.Store) -> Store:
         # [Modified in PQ]
         # Removed `payload_inclusion_list_satisfaction`
         max_height=Height(1),
+        deep_since_ms=pre.time_ms,
         block_receipt_times={
             root: compute_time_at_slot_ms(pre.genesis_time_ms, block.slot)
             for root, block in pre.blocks.items()

@@ -57,6 +57,7 @@ def make_store(spec, head_root, head_state):
         payload_timeliness_vote={},
         payload_data_availability_vote={},
         max_height=spec.Height(0),
+        deep_since_ms=spec.Uint64(0),
         block_receipt_times={},
         payload_receipt_times={},
         latest_confirmed=spec.ForkChoiceNode(

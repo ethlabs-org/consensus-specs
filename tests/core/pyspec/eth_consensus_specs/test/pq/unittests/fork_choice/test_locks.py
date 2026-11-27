@@ -77,6 +77,7 @@ def tree(spec, monkeypatch):
         payload_timeliness_vote={},
         payload_data_availability_vote={},
         max_height=spec.Height(0),
+        deep_since_ms=spec.Uint64(0),
         block_receipt_times=dict.fromkeys(blocks, spec.Uint64(0)),
         payload_receipt_times={},
         latest_confirmed=spec.ForkChoiceNode(
@@ -936,6 +937,35 @@ def test_fg_source_uses_viable_lock_ancestor(spec, tree):
     store.max_height = spec.Height(2)
     store.block_states[nodes["B1"].root].target_checkpoint.height = spec.Height(2)
     assert spec.get_ac_frame(store) == nodes["P"]
+
+
+def test_deep_fg_source_ages_from_local_acceptance(spec, tree):
+    store, nodes = tree
+    slot = spec.DEEP_FG_SOURCE_SLOTS + 8
+    store.locks = {lock(spec, nodes["A"], slot=slot - 1, fast=False, expiry=slot + 2)}
+    store.block_receipt_times[nodes["P"].root] = at_slot(spec, 8)
+    store.block_receipt_times[nodes["A"].root] = at_slot(spec, 8) + 1
+    for offset, expected in [(-1, None), (0, nodes["P"]), (1, nodes["A"])]:
+        store.time_ms = at_slot(spec, int(slot) + offset) + spec.get_support_cutoff_ms()
+        assert spec.get_ac_frame(store) == expected
+    store.deep_since_ms = store.time_ms  # A restart invalidates both old receipts.
+    assert spec.get_ac_frame(store) is None
+
+
+def test_fg_source_fast_precedes_old_prefix_then_falls_back(spec, tree):
+    store, nodes = tree
+    slot = spec.DEEP_FG_SOURCE_SLOTS + 8
+    store.time_ms = at_slot(spec, slot) + spec.get_support_cutoff_ms()
+    assert spec.get_ac_frame(store) is None
+    store.locks = {
+        lock(spec, nodes["P"], slot=slot - 2, expiry=slot + 1),
+        lock(spec, nodes["A"], slot=slot - 1, fast=False, expiry=slot + 1),
+    }
+    assert spec.get_ac_frame(store) == nodes["P"]
+    store.time_ms += spec.config.SLOT_DURATION_MS
+    assert spec.get_ac_frame(store) == nodes["A"]
+    store.time_ms += spec.config.SLOT_DURATION_MS
+    assert spec.get_ac_frame(store) is None
 
 
 @pytest.mark.parametrize("vote_slot", [10, 11])

@@ -718,10 +718,7 @@ assigned slot and staggered committee schedule.
 
 First, obtain `source` from
 [`get_ac_frame(store)`](./fork-choice/finality-gadget.md#new-get_ac_frame) at or
-after the support cutoff. The `source` is the deepest viable effective live
-fast-lock node whose vote slot is at least the current slot minus two. Slow
-locks do not provide FG sources. If `source` is `None`, the validator does not
-attest.
+after the support cutoff. If `source` is `None`, the validator does not attest.
 
 Let `source_state` be the state after processing `source`:
 
