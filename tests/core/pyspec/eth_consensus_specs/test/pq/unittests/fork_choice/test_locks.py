@@ -952,6 +952,28 @@ def test_deep_fg_source_ages_from_local_acceptance(spec, tree):
     assert spec.get_ac_frame(store) is None
 
 
+def test_duplicate_envelope_preserves_deep_full_source(spec, tree, monkeypatch):
+    store, nodes = tree
+    full = replace(nodes["A"], payload_status=spec.PAYLOAD_STATUS_FULL)
+    pending = replace(full, payload_status=spec.PAYLOAD_STATUS_PENDING)
+    envelope = spec.SignedExecutionPayloadEnvelope(
+        message=spec.ExecutionPayloadEnvelope(beacon_block_root=full.root)
+    )
+    monkeypatch.setattr(spec, "is_data_available", lambda root: True)
+    monkeypatch.setattr(spec, "verify_execution_payload_envelope", lambda *args: None)
+    store.time_ms = at_slot(spec, 8) + spec.get_support_cutoff_ms()
+    spec.on_execution_payload_envelope(store, envelope)
+
+    slot = spec.DEEP_FG_SOURCE_SLOTS + 8
+    store.locks = {lock(spec, full, slot=slot - 1, fast=False, expiry=slot + 1)}
+    store.time_ms = at_slot(spec, slot) + spec.get_support_cutoff_ms()
+    assert spec.get_ac_frame(store) == pending
+    store.time_ms += spec.config.SLOT_DURATION_MS
+    assert spec.get_ac_frame(store) == full
+    spec.on_execution_payload_envelope(store, envelope)
+    assert spec.get_ac_frame(store) == full
+
+
 def test_fg_source_fast_precedes_old_prefix_then_falls_back(spec, tree):
     store, nodes = tree
     slot = spec.DEEP_FG_SOURCE_SLOTS + 8

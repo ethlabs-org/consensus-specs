@@ -375,9 +375,10 @@ def record_block_receipt_time(store: Store, root: Root) -> None:
 ```python
 def record_payload_receipt_time(store: Store, root: Root) -> None:
     """
-    Store payload receipt time.
+    Record when the payload was first verified.
     """
-    store.payload_receipt_times[root] = store.time_ms
+    if root not in store.payload_receipt_times:
+        store.payload_receipt_times[root] = store.time_ms
 ```
 
 ## Handlers
