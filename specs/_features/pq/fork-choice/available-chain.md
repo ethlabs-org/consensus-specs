@@ -279,7 +279,7 @@ def get_block_and_payload_receipt_time(store: Store, node: ForkChoiceNode) -> Ui
 
 ```python
 def get_vote_resolution_time(
-    store: Store, supported_node: ForkChoiceNode, vote_slot: Slot, vote_receipt_time: Uint64
+    store: Store, supported_node: ForkChoiceNode, vote_receipt_time: Uint64
 ) -> Uint64:
     """
     Return the resolution time of the vote.
@@ -291,17 +291,8 @@ def get_vote_resolution_time(
     if block_root not in store.blocks:
         return INFINITE_TIME_MS
 
-    # The supported block must not be later than the vote's slot
-    block_slot = store.blocks[block_root].slot
-    if block_slot > vote_slot:
-        return INFINITE_TIME_MS
-
-    # PENDING is only for the vote's own-slot block; older blocks require a decision.
-    if block_slot == vote_slot:
-        if payload_status != PAYLOAD_STATUS_PENDING:
-            return INFINITE_TIME_MS
-    elif payload_status not in (PAYLOAD_STATUS_EMPTY, PAYLOAD_STATUS_FULL):
-        return INFINITE_TIME_MS
+    # on_head_vote_message admits only heads at or before the vote slot, with
+    # PENDING exactly for the vote's own-slot block.
 
     # Full votes require a verified payload
     if payload_status == PAYLOAD_STATUS_FULL and not is_payload_verified(store, block_root):
@@ -342,7 +333,7 @@ def get_local_view_from_p2p_messages(
             )
             # Record the indices of included messages whose votes resolve before the support threshold
             if (
-                get_vote_resolution_time(store, supported_node, data.slot, message_receipt_ms)
+                get_vote_resolution_time(store, supported_node, message_receipt_ms)
                 < resolution_threshold_ms
             ):
                 support_indices.append(len(vote_messages) - 1)
