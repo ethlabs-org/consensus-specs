@@ -317,7 +317,8 @@ def test_fg_viability_at_frontier(spec, tree, justified):
     store.justified_checkpoint = spec.HeightCheckpoint(
         height=int(justified == "A"), root=nodes[justified].root
     )
-    for name, height in [("A", 1), ("B", 1), ("A1", 2), ("B1", 2)]:
+    # A1 is a proper descendant of A at the same height as A.
+    for name, height in [("A", 1), ("B", 1), ("A1", 1), ("B1", 2)]:
         store.block_states[nodes[name].root].target_checkpoint.height = spec.Height(height)
 
     frame = spec.get_fg_frame(store)
@@ -334,6 +335,7 @@ def test_fg_viability_at_frontier(spec, tree, justified):
     assert (nodes["B"] in viable) == (justified == "F")
 
     # With only A's branch at the frontier, finality's guard uses the same rule.
+    store.block_states[nodes["A1"].root].target_checkpoint.height = spec.Height(2)
     store.block_states[nodes["B1"].root].target_checkpoint.height = spec.Height(1)
     assert spec.has_viable_descendant(store, nodes["B"].root) == (justified == "F")
     assert spec.get_head_walk_anchor(store, spec.get_fg_frame(store)) == frame.finalized_node
