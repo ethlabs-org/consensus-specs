@@ -23,6 +23,11 @@ def at_slot(spec, slot):
     return spec.compute_time_at_slot_ms(spec.Uint64(0), spec.Slot(slot))
 
 
+def finalized_subtree(spec, store):
+    frame = spec.get_fg_frame(store)
+    return spec.get_subtree(store, frame.finalized_node)
+
+
 @pytest.fixture
 def tree(spec, monkeypatch):
     # Lock tests can specify exact ticket counts; authenticated votes use the sampler.
@@ -148,7 +153,9 @@ def test_fast_expiry_paper_example_and_gap(spec, tree, monkeypatch):
     assert expiries == [12, 14, 16, 18, 20, 22]
 
 
-@pytest.mark.parametrize("kind", ["slow", "same_slot", "newer_slot", "expired", "outside_frame"])
+@pytest.mark.parametrize(
+    "kind", ["slow", "same_slot", "newer_slot", "expired", "outside_frame", "unverified_full"]
+)
 def test_fast_expiry_ignores_ineligible_locks(spec, tree, kind):
     store, nodes = tree
     existing = lock(spec, nodes["A"])
@@ -160,12 +167,19 @@ def test_fast_expiry_ignores_ineligible_locks(spec, tree, kind):
         existing = replace(existing, vote_slot=spec.Slot(11))
     elif kind == "expired":
         existing = replace(existing, expiry_slot=spec.Slot(10))
+    elif kind == "unverified_full":
+        existing = replace(
+            existing, node=replace(nodes["A"], payload_status=spec.PAYLOAD_STATUS_FULL)
+        )
     else:
         existing = replace(existing, node=replace(nodes["A"], root=spec.Root(b"\xff" * 32)))
     store.locks = {existing}
     assert (
         spec.compute_fast_lock_expiry(
-            spec.get_live_locks(store, spec.get_fg_frame(store), store.time_ms), spec.Slot(10)
+            spec.get_live_locks(
+                store, spec.get_fg_frame(store), finalized_subtree(spec, store), store.time_ms
+            ),
+            spec.Slot(10),
         )
         == 12
     )
@@ -177,7 +191,8 @@ def test_fast_expiry_counts_lock_moved_to_finalized(spec, tree):
     store.locks = {lock(spec, frame.finalized_node, expiry=12)}
     assert (
         spec.compute_fast_lock_expiry(
-            spec.get_live_locks(store, frame, store.time_ms), spec.Slot(10)
+            spec.get_live_locks(store, frame, finalized_subtree(spec, store), store.time_ms),
+            spec.Slot(10),
         )
         == 14
     )
@@ -233,7 +248,9 @@ def test_missing_candidate_breaks_slow_streak(spec, tree, missing):
     store, nodes = tree
     store.saved_confirmations = dict.fromkeys(range(10, 41), nodes["A"])
     assert (
-        spec.compute_slow_lock(store, spec.get_fg_frame(store), set(), spec.Slot(41), nodes["A"])
+        spec.compute_slow_lock(
+            store, finalized_subtree(spec, store), set(), spec.Slot(41), nodes["A"]
+        )
         == nodes["A"]
     )
     if missing == "absent":
@@ -241,7 +258,9 @@ def test_missing_candidate_breaks_slow_streak(spec, tree, missing):
     else:
         store.saved_confirmations[10] = replace(nodes["A"], root=spec.Root(b"\xff" * 32))
     assert (
-        spec.compute_slow_lock(store, spec.get_fg_frame(store), set(), spec.Slot(41), nodes["A"])
+        spec.compute_slow_lock(
+            store, finalized_subtree(spec, store), set(), spec.Slot(41), nodes["A"]
+        )
         is None
     )
 
@@ -257,9 +276,19 @@ def test_expiry_at_slot_start(spec, tree):
     store, nodes = tree
     store.locks = {lock(spec, nodes["A"], expiry=12)}
     frame = spec.get_fg_frame(store)
-    assert len(spec.get_live_locks(store, frame, at_slot(spec, 13) - 1)) == 1
-    assert not spec.get_live_locks(store, frame, at_slot(spec, 13))
-    assert not spec.get_live_locks(store, frame, at_slot(spec, 13) + spec.get_head_vote_due_ms())
+    assert (
+        len(
+            spec.get_live_locks(store, frame, finalized_subtree(spec, store), at_slot(spec, 13) - 1)
+        )
+        == 1
+    )
+    assert not spec.get_live_locks(store, frame, finalized_subtree(spec, store), at_slot(spec, 13))
+    assert not spec.get_live_locks(
+        store,
+        frame,
+        finalized_subtree(spec, store),
+        at_slot(spec, 13) + spec.get_head_vote_due_ms(),
+    )
 
 
 def test_live_locks_move_to_viable_ancestor_and_stay_there(spec, tree):
@@ -269,14 +298,20 @@ def test_live_locks_move_to_viable_ancestor_and_stay_there(spec, tree):
     full_frame = spec.get_fg_frame(store)
     frame = replace(full_frame, viable_heads={nodes["B"]})
     moved = replace(original, node=nodes["P"])
-    assert spec.get_live_locks(store, frame, store.time_ms) == {moved}
-    assert spec.get_head_walk_anchor(store, frame) == nodes["P"]
+    assert spec.get_live_locks(store, frame, finalized_subtree(spec, store), store.time_ms) == {
+        moved
+    }
+    assert spec.get_head_walk_anchor(store, frame, finalized_subtree(spec, store)) == nodes["P"]
     assert not spec.conflicts_with_lock(
-        store, spec.get_live_locks(store, frame, store.time_ms), nodes["B"]
+        store,
+        spec.get_live_locks(store, frame, finalized_subtree(spec, store), store.time_ms),
+        nodes["B"],
     )
     # Even an empty lock update must store the moved node.
-    spec.add_locks(store, frame, set())
-    assert spec.get_live_locks(store, full_frame, store.time_ms) == {moved}
+    spec.add_locks(store, frame, finalized_subtree(spec, store), set())
+    assert spec.get_live_locks(
+        store, full_frame, finalized_subtree(spec, store), store.time_ms
+    ) == {moved}
 
 
 def test_anchor_uses_frame_root_when_lock_is_its_ancestor(spec, tree):
@@ -285,9 +320,11 @@ def test_anchor_uses_frame_root_when_lock_is_its_ancestor(spec, tree):
     frame = replace(
         spec.get_fg_frame(store), forkchoice_root=nodes["A"], viable_heads={nodes["A1"]}
     )
-    assert spec.get_head_walk_anchor(store, frame) == nodes["A"]
+    assert spec.get_head_walk_anchor(store, frame, finalized_subtree(spec, store)) == nodes["A"]
     assert not spec.conflicts_with_lock(
-        store, spec.get_live_locks(store, frame, store.time_ms), nodes["A1"]
+        store,
+        spec.get_live_locks(store, frame, finalized_subtree(spec, store), store.time_ms),
+        nodes["A1"],
     )
 
 
@@ -299,6 +336,8 @@ def test_unlock_at_threshold_moves_to_common_ancestor_preserving_fields(spec, tr
         vote(spec, store, nodes["B"], validator)
     spec.unlock(
         store,
+        spec.get_fg_frame(store),
+        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
@@ -315,6 +354,8 @@ def test_unlock_below_threshold_keeps_lock(spec, tree):
         vote(spec, store, nodes["B"], validator)
     spec.unlock(
         store,
+        spec.get_fg_frame(store),
+        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
@@ -331,6 +372,8 @@ def test_unlock_does_not_move_same_or_newer_slot_lock(spec, tree, lock_slot):
     vote(spec, store, nodes["B"], 0, weight=spec.HEAD_VOTE_UNLOCK_THRESHOLD)
     spec.unlock(
         store,
+        spec.get_fg_frame(store),
+        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
@@ -350,6 +393,8 @@ def test_unlock_equivocators_count_without_resolved_votes(spec, tree):
         vote(spec, store, unknown_b, validator)
     spec.unlock(
         store,
+        spec.get_fg_frame(store),
+        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
@@ -370,6 +415,8 @@ def test_unlock_equivocator_not_counted_twice(spec, tree):
         vote(spec, store, nodes["B"], validator)
     spec.unlock(
         store,
+        spec.get_fg_frame(store),
+        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
@@ -385,6 +432,8 @@ def test_unlock_counts_duplicate_committee_seats(spec, tree):
     vote(spec, store, nodes["B"], 0, weight=spec.HEAD_VOTE_UNLOCK_THRESHOLD)
     spec.unlock(
         store,
+        spec.get_fg_frame(store),
+        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
@@ -403,6 +452,8 @@ def test_unlock_full_empty_conflict_moves_to_pending(spec, tree):
     vote(spec, store, full, 0, weight=spec.HEAD_VOTE_UNLOCK_THRESHOLD)
     spec.unlock(
         store,
+        spec.get_fg_frame(store),
+        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
@@ -417,6 +468,8 @@ def test_unlock_removes_expired_locks(spec, tree):
     store.locks = {lock(spec, nodes["A"], expiry=10)}
     spec.unlock(
         store,
+        spec.get_fg_frame(store),
+        finalized_subtree(spec, store),
         spec.Slot(10),
         *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
@@ -508,7 +561,9 @@ def test_ac_vote_head_viable_tree_fallback(spec, tree, receipt_offset, with_payl
             store.payload_receipt_times[nodes[name].root] = spec.Uint64(0)
 
     frame = spec.get_fg_frame(store)
-    restricted = spec.get_voter_subtree(store, frame.tree, spec.Slot(11))
+    restricted = spec.get_voter_subtree(
+        store, spec.get_subtree(store, frame.finalized_node), spec.Slot(11)
+    )
     # The restricted tree is nonempty even when none of its nodes is viable.
     assert restricted
     assert bool(spec.get_viable_subtree(store, frame, restricted)) == (receipt_offset < 0)
@@ -528,7 +583,9 @@ def test_ac_vote_head_keeps_payload_restriction(spec, tree):
     store.payload_receipt_times[nodes["A1"].root] = freeze
     full = replace(nodes["A1"], payload_status=spec.PAYLOAD_STATUS_FULL)
     frame = spec.get_fg_frame(store)
-    restricted = spec.get_voter_subtree(store, frame.tree, spec.Slot(11))
+    restricted = spec.get_voter_subtree(
+        store, spec.get_subtree(store, frame.finalized_node), spec.Slot(11)
+    )
     assert full in frame.viable_heads
     assert full not in restricted
     assert nodes["A1"] in spec.get_viable_subtree(store, frame, restricted)
@@ -605,7 +662,9 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree, at_deadline):
         store.time_ms += spec.get_head_vote_due_ms() - 1
         assert spec.get_ac_vote_head(store) is None
         store.time_ms += 1
-        cast, support = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
+        cast, support = spec.get_votes_declared_in_proposals(
+            store, finalized_subtree(spec, store), spec.Slot(11)
+        )
         assert cast == support
         assert {v.supported_node for v in cast} == {nodes["B"]}
     head = spec.get_ac_vote_head(store)
@@ -652,11 +711,15 @@ def test_proposer_support_needs_known_verified_head(spec, tree):
         nodes,
         [(unknown, [0, 1], True), (full, [2, 3], True), (nodes["B"], [4, 5], True)],
     )
-    view = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
+    view = spec.get_votes_declared_in_proposals(
+        store, finalized_subtree(spec, store), spec.Slot(11)
+    )
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {4, 5})
     # Verifying the payload lets the proposer's support count for the full vote
     store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
-    view = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
+    view = spec.get_votes_declared_in_proposals(
+        store, finalized_subtree(spec, store), spec.Slot(11)
+    )
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {2, 3, 4, 5})
 
 
@@ -665,7 +728,9 @@ def test_declarations_keep_individual_support_bits(spec, tree):
     propose_votes(
         spec, store, nodes, [(nodes["B"], [0, 1, 2], True), (nodes["B"], [3, 4, 5], False)]
     )
-    view = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
+    view = spec.get_votes_declared_in_proposals(
+        store, finalized_subtree(spec, store), spec.Slot(11)
+    )
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {0, 1, 2})
 
 
@@ -679,13 +744,17 @@ def test_equivocation_holds_declaration_without_creating_vote_weight(spec, tree)
     store.head_vote_messages.clear()
     store.head_vote_message_receipt_times.clear()
     vote(spec, store, nodes["P"], 0)
-    assert not spec.is_ac_vote_ready(store)
-    assert spec.get_votes_declared_in_proposals(store, spec.Slot(11)) == (set(), set())
+    assert not spec.is_ac_vote_ready(store, finalized_subtree(spec, store))
+    assert spec.get_votes_declared_in_proposals(
+        store, finalized_subtree(spec, store), spec.Slot(11)
+    ) == (set(), set())
     freeze = at_slot(spec, 10) + spec.get_view_freeze_ms()
     vote(spec, store, nodes["A"], 0, received=freeze)
     receipts = dict(store.head_vote_message_receipt_times)
-    assert spec.is_ac_vote_ready(store)
-    proposer_view = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
+    assert spec.is_ac_vote_ready(store, finalized_subtree(spec, store))
+    proposer_view = spec.get_votes_declared_in_proposals(
+        store, finalized_subtree(spec, store), spec.Slot(11)
+    )
     assert {v.supported_node for v in proposer_view[0]} == {nodes["P"], nodes["A"]}
     assert not proposer_view[1]
     local_view = spec.get_head_vote_messages_by_cutoff(store, spec.Slot(10), freeze, freeze)
@@ -707,7 +776,9 @@ def test_equivocation_holds_declaration_without_creating_vote_weight(spec, tree)
 def test_proposer_support_follows_bits_when_both_resolve_locally(spec, tree):
     store, nodes = tree
     propose_votes(spec, store, nodes, [(nodes["A"], [0, 1], False), (nodes["B"], [2, 3], True)])
-    proposer_view = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
+    proposer_view = spec.get_votes_declared_in_proposals(
+        store, finalized_subtree(spec, store), spec.Slot(11)
+    )
     assert merged_voters(spec, proposer_view) == ({0, 1, 2, 3}, {2, 3})
     infinite = spec.INFINITE_TIME_MS
     local_view = spec.get_head_votes_by_cutoff(store, spec.Slot(10), infinite, infinite)
@@ -737,8 +808,11 @@ def test_unheld_declaration_delays_ready_sibling(spec, tree):
     )
     sibling.body.head_vote_support_bits.append(True)
     store.block_states[nodes["A1"].root] = store.block_states[nodes["B1"].root].copy()
-    assert not spec.is_ac_vote_ready(store)
-    assert merged_voters(spec, spec.get_votes_declared_in_proposals(store, spec.Slot(11))) == (
+    assert not spec.is_ac_vote_ready(store, finalized_subtree(spec, store))
+    assert merged_voters(
+        spec,
+        spec.get_votes_declared_in_proposals(store, finalized_subtree(spec, store), spec.Slot(11)),
+    ) == (
         {0},
         {0},
     )
@@ -887,7 +961,7 @@ def test_vote_readiness_waits_for_evidence_and_supported_heads(spec, tree, suppo
         store.head_vote_messages.clear()
         store.head_vote_message_receipt_times.clear()
     ready = held and not supported
-    assert spec.is_ac_vote_ready(store) == ready
+    assert spec.is_ac_vote_ready(store, finalized_subtree(spec, store)) == ready
     assert (spec.get_ac_vote_head(store) is not None) == ready
 
 
@@ -951,7 +1025,7 @@ def test_responsive_vote_accepts_other_in_frame_proposer(spec, tree):
     proposal.slot = spec.Slot(11)
     proposal.proposer_index = 2
     vote(spec, store, nodes["B"], 0)
-    assert spec.is_ac_vote_ready(store)
+    assert spec.is_ac_vote_ready(store, finalized_subtree(spec, store))
     assert spec.get_ac_vote_head(store) == replace(
         nodes["B1"], payload_status=spec.PAYLOAD_STATUS_PENDING
     )
@@ -995,8 +1069,10 @@ def test_readiness_matches_proposer_support(spec, tree, status, in_frame):
         store.justified_checkpoint = store.finalized_checkpoint.copy()
     propose_votes(spec, store, nodes, [(replace(nodes["A"], payload_status=status), [0], True)])
     usable = in_frame and status == spec.PAYLOAD_STATUS_PENDING
-    assert spec.is_ac_vote_ready(store) == usable
-    _, support = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
+    assert spec.is_ac_vote_ready(store, finalized_subtree(spec, store)) == usable
+    _, support = spec.get_votes_declared_in_proposals(
+        store, finalized_subtree(spec, store), spec.Slot(11)
+    )
     assert bool(support) == usable
 
 
@@ -1295,7 +1371,7 @@ def test_vote_resolution_enforces_status_in_both_arrival_orders(
         store, spec.Slot(11), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
     )
     assert view[1] == ([0] if valid else [])
-    tree_nodes = spec.get_fg_frame(store).tree
+    tree_nodes = finalized_subtree(spec, store)
     assert spec.is_usable_proposer_support(store, tree_nodes, data) == valid
 
 

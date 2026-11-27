@@ -38,7 +38,6 @@ walks.
 class FGFrame:
     finalized_node: ForkChoiceNode
     forkchoice_root: ForkChoiceNode
-    tree: Sequence[ForkChoiceNode]
     viable_heads: set[ForkChoiceNode]
 ```
 
@@ -50,9 +49,6 @@ def get_fg_frame(store: Store) -> FGFrame:
         root=store.finalized_checkpoint.root,
         payload_status=PAYLOAD_STATUS_PENDING,
     )
-
-    # Root the subtree at the finalized node
-    tree = get_subtree(store, finalized_node)
 
     # Compute the forkchoice_root based on the justification height and FG contest
     if store.max_height == store.justified_checkpoint.height + 1 and not is_fg_contest(store):
@@ -67,14 +63,13 @@ def get_fg_frame(store: Store) -> FGFrame:
     # Viable nodes must be descendants of forkchoice_root and pass the FG viability test
     viable_heads = {
         node
-        for node in tree
+        for node in get_subtree(store, finalized_node)
         if is_ancestor(store, node, forkchoice_root) and is_fg_viable_block(store, node.root)
     }
 
     return FGFrame(
         finalized_node=finalized_node,
         forkchoice_root=forkchoice_root,
-        tree=tree,
         viable_heads=viable_heads,
     )
 ```
@@ -226,10 +221,11 @@ def get_ac_frame(store: Store) -> ForkChoiceNode | None:
 
     current_slot = get_current_slot(store)
     fg_frame = get_fg_frame(store)
-    viable_subtree = get_viable_subtree(store, fg_frame, fg_frame.tree)
+    tree = get_subtree(store, fg_frame.finalized_node)
+    viable_subtree = get_viable_subtree(store, fg_frame, tree)
     candidates = {
         lock.node
-        for lock in get_live_locks(store, fg_frame, store.time_ms)
+        for lock in get_live_locks(store, fg_frame, tree, store.time_ms)
         if lock.fast and current_slot <= lock.vote_slot + 2 and lock.node in viable_subtree
     }
     if len(candidates) == 0:

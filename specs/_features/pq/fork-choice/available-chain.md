@@ -349,9 +349,8 @@ votes enter the view as equivocation evidence without proposer support.
 
 ```python
 def get_declared_votes_and_readiness(
-    store: Store, slot: Slot
+    store: Store, tree: Sequence[ForkChoiceNode], slot: Slot
 ) -> tuple[set[ACVote], set[ACVote], bool]:
-    tree = get_fg_frame(store).tree
     votes: set[ACVote] = set()
     support: set[ACVote] = set()
     all_held = True
@@ -430,13 +429,13 @@ known blocks. *Full* block support additionally requires a verified payload.
 
 ```python
 def get_votes_declared_in_proposals(
-    store: Store, block_slot: Slot
+    store: Store, tree: Sequence[ForkChoiceNode], block_slot: Slot
 ) -> tuple[set[ACVote], set[ACVote]]:
     """
     Return the held declarations and usable support of the slot's proposals.
     """
 
-    votes, support, _ = get_declared_votes_and_readiness(store, block_slot)
+    votes, support, _ = get_declared_votes_and_readiness(store, tree, block_slot)
     return votes, support
 ```
 
@@ -502,7 +501,11 @@ def get_equivocating_pubkeys(votes: set[ACVote]) -> set[XMSSPubkey]:
 
 ```python
 def get_viable_ancestor(
-    store: Store, fg_frame: FGFrame, viable_tree: Sequence[ForkChoiceNode], node: ForkChoiceNode
+    store: Store,
+    fg_frame: FGFrame,
+    tree: Sequence[ForkChoiceNode],
+    viable_tree: Sequence[ForkChoiceNode],
+    node: ForkChoiceNode,
 ) -> ForkChoiceNode:
     """
     Return the deepest ancestor that is viable or an ancestor of the forkchoice root.
@@ -511,7 +514,7 @@ def get_viable_ancestor(
         store,
         {
             ancestor
-            for ancestor in fg_frame.tree
+            for ancestor in tree
             if is_ancestor(store, node, ancestor)
             and (ancestor in viable_tree or is_ancestor(store, fg_frame.forkchoice_root, ancestor))
         },
@@ -524,20 +527,22 @@ def get_viable_ancestor(
 ancestor so that a later change to the FG frame cannot restore the old node.
 
 ```python
-def get_live_locks(store: Store, fg_frame: FGFrame, time_ms: Uint64) -> set[ACLock]:
+def get_live_locks(
+    store: Store, fg_frame: FGFrame, tree: Sequence[ForkChoiceNode], time_ms: Uint64
+) -> set[ACLock]:
     """
     Return unexpired locks in the frame, each moved to its viable ancestor.
     """
-    viable_tree = get_viable_subtree(store, fg_frame, fg_frame.tree)
+    viable_tree = get_viable_subtree(store, fg_frame, tree)
     return {
         ACLock(
-            node=get_viable_ancestor(store, fg_frame, viable_tree, lock.node),
+            node=get_viable_ancestor(store, fg_frame, tree, viable_tree, lock.node),
             vote_slot=lock.vote_slot,
             fast=lock.fast,
             expiry_slot=lock.expiry_slot,
         )
         for lock in store.locks
-        if lock.node in fg_frame.tree
+        if lock.node in tree
         and time_ms < compute_time_at_slot_ms(store.genesis_time_ms, lock.expiry_slot + 1)
     }
 ```
@@ -665,13 +670,15 @@ def is_eligible_for_head_walk(
 a restricted view.
 
 ```python
-def get_head_walk_anchor(store: Store, fg_frame: FGFrame) -> ForkChoiceNode:
+def get_head_walk_anchor(
+    store: Store, fg_frame: FGFrame, finalized_subtree: Sequence[ForkChoiceNode]
+) -> ForkChoiceNode:
     """
     Return the deepest live lock node or the forkchoice root.
     """
     return get_deepest_node(
         store,
-        {lock.node for lock in get_live_locks(store, fg_frame, store.time_ms)}
+        {lock.node for lock in get_live_locks(store, fg_frame, finalized_subtree, store.time_ms)}
         | {fg_frame.forkchoice_root},
     )
 ```
@@ -686,6 +693,7 @@ frame independently of tree.
 def get_head_in_tree(
     store: Store,
     fg_frame: FGFrame,
+    finalized_subtree: Sequence[ForkChoiceNode],
     tree: Sequence[ForkChoiceNode],
     votes: set[ACVote],
     support_votes: set[ACVote],
@@ -694,7 +702,7 @@ def get_head_in_tree(
     """
     Return the head of the tree.
     """
-    anchor = get_head_walk_anchor(store, fg_frame)
+    anchor = get_head_walk_anchor(store, fg_frame, finalized_subtree)
     viable_subtree = get_viable_subtree(store, fg_frame, tree)
     return compute_ghost_head(
         store=store,
@@ -769,7 +777,12 @@ finalized node.
 
 ```python
 def get_confirmed_head(
-    store: Store, fg_frame: FGFrame, votes: set[ACVote], support_votes: set[ACVote], slot: Slot
+    store: Store,
+    fg_frame: FGFrame,
+    tree: Sequence[ForkChoiceNode],
+    votes: set[ACVote],
+    support_votes: set[ACVote],
+    slot: Slot,
 ) -> ForkChoiceNode | None:
     """
     Return the confirmation candidate, or ``None`` if no node has sufficient support.
@@ -785,7 +798,7 @@ def get_confirmed_head(
     head = compute_ghost_head(
         store=store,
         anchor=fg_frame.finalized_node,
-        tree=fg_frame.tree,
+        tree=tree,
         get_score=lambda node: compute_confirmation_score(store, votes, support_votes, slot, node),
         is_eligible=is_eligible,
     )
@@ -805,7 +818,7 @@ genesis and nodes that conflict with a live lock.
 ```python
 def compute_confirmed_lock(
     store: Store,
-    fg_frame: FGFrame,
+    tree: Sequence[ForkChoiceNode],
     live_locks: set[ACLock],
     confirmed: ForkChoiceNode,
     test_predicate: Callable[[ForkChoiceNode], bool],
@@ -815,7 +828,7 @@ def compute_confirmed_lock(
     """
     path = {
         node
-        for node in fg_frame.tree
+        for node in tree
         if is_ancestor(store, confirmed, node)
         and store.blocks[node.root].slot > GENESIS_SLOT
         and not conflicts_with_lock(store, live_locks, node)
@@ -834,7 +847,7 @@ selected node is the fast lock.
 ```python
 def compute_fast_lock(
     store: Store,
-    fg_frame: FGFrame,
+    tree: Sequence[ForkChoiceNode],
     live_locks: set[ACLock],
     votes: set[ACVote],
     support_votes: set[ACVote],
@@ -846,7 +859,7 @@ def compute_fast_lock(
     """
     return compute_confirmed_lock(
         store=store,
-        fg_frame=fg_frame,
+        tree=tree,
         live_locks=live_locks,
         confirmed=confirmed,
         test_predicate=lambda node: (
@@ -869,7 +882,11 @@ The deepest such node is the slow lock.
 
 ```python
 def compute_slow_lock(
-    store: Store, fg_frame: FGFrame, live_locks: set[ACLock], slot: Slot, confirmed: ForkChoiceNode
+    store: Store,
+    tree: Sequence[ForkChoiceNode],
+    live_locks: set[ACLock],
+    slot: Slot,
+    confirmed: ForkChoiceNode,
 ) -> ForkChoiceNode | None:
     """
     Return the slow lock, or ``None`` if the window or common ancestor is missing.
@@ -879,14 +896,14 @@ def compute_slow_lock(
 
     previous_slots = range(slot + 1 - SLOW_LOCK_WINDOW, slot)
     if not all(
-        Slot(j) in store.saved_confirmations and store.saved_confirmations[Slot(j)] in fg_frame.tree
+        Slot(j) in store.saved_confirmations and store.saved_confirmations[Slot(j)] in tree
         for j in previous_slots
     ):
         return None
 
     slow_lock = compute_confirmed_lock(
         store=store,
-        fg_frame=fg_frame,
+        tree=tree,
         live_locks=live_locks,
         confirmed=confirmed,
         test_predicate=lambda node: all(
@@ -901,12 +918,14 @@ def compute_slow_lock(
 #### New `add_locks`
 
 ```python
-def add_locks(store: Store, fg_frame: FGFrame, locks: set[ACLock]) -> None:
+def add_locks(
+    store: Store, fg_frame: FGFrame, tree: Sequence[ForkChoiceNode], locks: set[ACLock]
+) -> None:
     """
     Add locks, remove expired or out-of-frame locks, and store their viable ancestors.
     """
     store.locks |= locks
-    store.locks = get_live_locks(store, fg_frame, store.time_ms)
+    store.locks = get_live_locks(store, fg_frame, tree, store.time_ms)
 ```
 
 #### New `update_locks_and_confirmation`
@@ -916,6 +935,7 @@ def update_locks_and_confirmation(
     store: Store,
     slot: Slot,
     fg_frame: FGFrame,
+    tree: Sequence[ForkChoiceNode],
     live_locks: set[ACLock],
     confirmed: ForkChoiceNode,
     fast_lock: ForkChoiceNode | None,
@@ -944,13 +964,12 @@ def update_locks_and_confirmation(
 
     # A veto stops the confirmation record, not locks on compatible ancestors.
     if not vetoed and not (
-        store.latest_confirmed in fg_frame.tree
-        and is_ancestor(store, store.latest_confirmed, confirmed)
+        store.latest_confirmed in tree and is_ancestor(store, store.latest_confirmed, confirmed)
     ):
         store.latest_confirmed = confirmed
 
     # Store viable ancestors even when neither test creates a new lock.
-    add_locks(store, fg_frame, locks)
+    add_locks(store, fg_frame, tree, locks)
 ```
 
 #### New `record_head_vote_message`
@@ -986,36 +1005,38 @@ def record_head_vote_message(store: Store, message: HeadVoteMessage, vote: ACVot
 ```python
 def update_confirmation(store: Store, slot: Slot) -> None:
     fg_frame = get_fg_frame(store)
+    tree = get_subtree(store, fg_frame.finalized_node)
     support_cutoff_ms = (
         compute_time_at_slot_ms(store.genesis_time_ms, slot) + get_support_cutoff_ms()
     )
     votes, support_votes = get_head_votes_by_cutoff(
         store, slot, INFINITE_TIME_MS, support_cutoff_ms
     )
-    confirmed = get_confirmed_head(store, fg_frame, votes, support_votes, slot)
+    confirmed = get_confirmed_head(store, fg_frame, tree, votes, support_votes, slot)
 
     # Return if there is no confirmation
     if confirmed is None:
         store.saved_confirmations.pop(slot, None)
         return
 
-    live_locks = get_live_locks(store, fg_frame, store.time_ms)
+    live_locks = get_live_locks(store, fg_frame, tree, store.time_ms)
     fast_lock = compute_fast_lock(
         store=store,
-        fg_frame=fg_frame,
+        tree=tree,
         live_locks=live_locks,
         votes=votes,
         support_votes=support_votes,
         slot=slot,
         confirmed=confirmed,
     )
-    slow_lock = compute_slow_lock(store, fg_frame, live_locks, slot, confirmed)
+    slow_lock = compute_slow_lock(store, tree, live_locks, slot, confirmed)
 
     # Write updates to store
     update_locks_and_confirmation(
         store,
         slot,
         fg_frame,
+        tree,
         live_locks,
         confirmed,
         fast_lock,
@@ -1030,11 +1051,17 @@ when their resolved vote supports a conflicting node. Count each validator's
 maximum applicable ticket weight. Only locks from before the vote slot can move.
 
 ```python
-def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVote]) -> None:
+def unlock(
+    store: Store,
+    fg_frame: FGFrame,
+    tree: Sequence[ForkChoiceNode],
+    slot: Slot,
+    votes: set[ACVote],
+    support_votes: set[ACVote],
+) -> None:
     """
     Move older locks using the supplied vote and support view.
     """
-    fg_frame = get_fg_frame(store)
     equivocating_pubkeys = get_equivocating_pubkeys(votes)
 
     def reaches_unlock_threshold(node: ForkChoiceNode) -> bool:
@@ -1043,18 +1070,18 @@ def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVo
             vote
             for vote in support_votes
             if vote.slot == slot
-            and vote.supported_node in fg_frame.tree
+            and vote.supported_node in tree
             and not is_compatible(store, vote.supported_node, node)
         }
         return sum_head_vote_weights(store, opposing_votes, slot) >= HEAD_VOTE_UNLOCK_THRESHOLD
 
     locks = set()
-    for lock in get_live_locks(store, fg_frame, store.time_ms):
+    for lock in get_live_locks(store, fg_frame, tree, store.time_ms):
         node = lock.node
         if lock.vote_slot < slot:
             fallback_path = {
                 ancestor
-                for ancestor in fg_frame.tree
+                for ancestor in tree
                 if is_ancestor(store, node, ancestor) and not reaches_unlock_threshold(ancestor)
             }
             node = (
@@ -1118,6 +1145,7 @@ def get_ac_proposal(
     assert current_slot > GENESIS_SLOT
 
     fg_frame = get_fg_frame(store)
+    tree = get_subtree(store, fg_frame.finalized_node)
     vote_messages, support_indices = get_head_vote_messages_by_cutoff(
         store,
         current_slot - 1,
@@ -1129,11 +1157,12 @@ def get_ac_proposal(
     votes, support_votes = compute_merged_view(
         store, (vote_messages, support_indices), (set(), set())
     )
-    unlock(store, current_slot - 1, votes, support_votes)
+    unlock(store, fg_frame, tree, current_slot - 1, votes, support_votes)
     head = get_head_in_tree(
         store=store,
         fg_frame=fg_frame,
-        tree=fg_frame.tree,
+        finalized_subtree=tree,
+        tree=tree,
         votes=votes,
         support_votes=support_votes,
         slot=current_slot - 1,
@@ -1179,12 +1208,12 @@ receiver's admission window. In that case the receiver can wait until the
 head-vote deadline even if it received the declared message.
 
 ```python
-def is_ac_vote_ready(store: Store) -> bool:
+def is_ac_vote_ready(store: Store, tree: Sequence[ForkChoiceNode]) -> bool:
     """
     Return the current slot's readiness computed by
     ``get_declared_votes_and_readiness``.
     """
-    _, _, ready = get_declared_votes_and_readiness(store, get_current_slot(store))
+    _, _, ready = get_declared_votes_and_readiness(store, tree, get_current_slot(store))
     return ready
 ```
 
@@ -1205,10 +1234,11 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
     elapsed = get_time_into_slot_ms(store)
     if elapsed > get_head_vote_due_ms():
         return None
-    if elapsed < get_head_vote_due_ms() and not is_ac_vote_ready(store):
+    fg_frame = get_fg_frame(store)
+    tree = get_subtree(store, fg_frame.finalized_node)
+    if elapsed < get_head_vote_due_ms() and not is_ac_vote_ready(store, tree):
         return None
 
-    fg_frame = get_fg_frame(store)
     if current_slot == GENESIS_SLOT:
         store.prepared_head_vote = (current_slot, fg_frame.finalized_node)
         return fg_frame.finalized_node
@@ -1223,18 +1253,19 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
         resolution_threshold_ms=view_freeze_ms,
     )
     # Proposer view
-    proposer_view = get_votes_declared_in_proposals(store, current_slot)
+    proposer_view = get_votes_declared_in_proposals(store, tree, current_slot)
     # Merge views
     votes, support_votes = compute_merged_view(store, local_view, proposer_view)
-    unlock(store, current_slot - 1, votes, support_votes)
+    unlock(store, fg_frame, tree, current_slot - 1, votes, support_votes)
 
     # Run over voter viable subtree
-    voter_subtree = get_voter_subtree(store, fg_frame.tree, current_slot)
+    voter_subtree = get_voter_subtree(store, tree, current_slot)
     if len(get_viable_subtree(store, fg_frame, voter_subtree)) == 0:
-        voter_subtree = fg_frame.tree
+        voter_subtree = tree
     head = get_head_in_tree(
         store=store,
         fg_frame=fg_frame,
+        finalized_subtree=tree,
         tree=voter_subtree,
         votes=votes,
         support_votes=support_votes,
@@ -1277,17 +1308,16 @@ frame. Ancestry includes payload status, so the result can be pending.
 ```python
 def get_confirmed_node(store: Store) -> ForkChoiceNode:
     fg_frame = get_fg_frame(store)
+    tree = get_subtree(store, fg_frame.finalized_node)
     confirmed = (
-        store.latest_confirmed
-        if store.latest_confirmed in fg_frame.tree
-        else fg_frame.finalized_node
+        store.latest_confirmed if store.latest_confirmed in tree else fg_frame.finalized_node
     )
     head = get_head(store)
     return get_deepest_node(
         store,
         {
             node
-            for node in fg_frame.tree
+            for node in tree
             if is_ancestor(store, confirmed, node) and is_ancestor(store, head, node)
         },
     )
@@ -1314,13 +1344,15 @@ def get_head(store: Store) -> ForkChoiceNode:
         slot = current_slot - 1
 
     fg_frame = get_fg_frame(store)
+    tree = get_subtree(store, fg_frame.finalized_node)
     votes, support_votes = get_head_votes_by_cutoff(
         store, slot, receipt_threshold_ms=INFINITE_TIME_MS, resolution_threshold_ms=INFINITE_TIME_MS
     )
     head = get_head_in_tree(
         store=store,
         fg_frame=fg_frame,
-        tree=fg_frame.tree,
+        finalized_subtree=tree,
+        tree=tree,
         votes=votes,
         support_votes=support_votes,
         slot=slot,
