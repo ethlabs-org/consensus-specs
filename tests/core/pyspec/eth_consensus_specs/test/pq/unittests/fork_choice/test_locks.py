@@ -683,7 +683,7 @@ def test_declarations_keep_individual_support_bits(spec, tree):
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {0, 1, 2})
 
 
-def test_pair_backed_declaration_matches_proposer_support(spec, tree):
+def test_pair_backed_declaration_matches_proposer_support(spec, tree, monkeypatch):
     store, nodes = tree
     store.time_ms = at_slot(spec, 11)
     propose_votes(spec, store, nodes, [(nodes["B"], [0], True)])
@@ -698,6 +698,20 @@ def test_pair_backed_declaration_matches_proposer_support(spec, tree):
     assert spec.get_ac_vote_head(store) is None
     vote(spec, store, nodes["A"], 0, received=freeze, weight=2)
     messages = list(store.head_vote_messages[10])
+    commitments = [spec.Root(bytes([i]) * 32) for i in (1, 2, 3)]
+    for message, commitment, weight in zip(messages, commitments[:2], (5, 2), strict=True):
+        root = spec.hash_tree_root(message)
+        store.validated_head_votes[root] = replace(
+            store.validated_head_votes[root],
+            ticket_openings=frozenset({(commitment, spec.Bytes32(weight.to_bytes(32, "little")))}),
+        )
+    tally = spec.get_ac_tally_state(store)
+    tally.validators.append(spec.Validator(vrf_root=commitments[0]))
+    monkeypatch.setattr(
+        spec,
+        "compute_ac_ticket_weight",
+        lambda snapshots, dynasty, slot, index, secret: spec.bytes_to_uint64(secret[:8]),
+    )
     receipts = dict(store.head_vote_message_receipt_times)
     validated = dict(store.validated_head_votes)
     assert spec.get_ac_vote_head(store) is not None
@@ -708,7 +722,12 @@ def test_pair_backed_declaration_matches_proposer_support(spec, tree):
     assert (merged, support) == proposer_view[:2]
     assert not spec.get_equivocating_pubkeys(merged)
     assert {v.supported_node for v in support} == {nodes["B"]}
-    assert spec.compute_head_walk_score(store, merged, support, spec.Slot(10), nodes["B"]) == 3
+    for commitment, expected in zip(commitments, (5, 2, 0), strict=True):
+        tally.validators[0].vrf_root = commitment
+        assert (
+            spec.compute_head_walk_score(store, merged, support, spec.Slot(10), nodes["B"])
+            == expected
+        )
     assert spec.compute_head_walk_score(store, merged, support, spec.Slot(10), nodes["A"]) == 0
     assert store.head_vote_messages == {10: messages}
     assert store.head_vote_message_receipt_times == receipts
