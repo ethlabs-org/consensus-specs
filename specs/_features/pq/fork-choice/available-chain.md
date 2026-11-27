@@ -372,9 +372,6 @@ def get_declared_votes_and_readiness(
             continue
         block = cast("BeaconBlock", block)
         ready = True
-        if not block.body.head_vote_declarations:
-            ready_proposal = True
-            continue
         for declaration, marked in zip(
             block.body.head_vote_declarations, block.body.head_vote_support_bits, strict=True
         ):

@@ -1024,8 +1024,10 @@ def test_responsive_vote_accepts_other_in_frame_proposer(spec, tree):
     proposal = store.blocks[nodes["B1"].root]
     proposal.slot = spec.Slot(11)
     proposal.proposer_index = 2
-    vote(spec, store, nodes["B"], 0)
+    # An empty proposal is ready even before any previous-slot votes are held.
+    assert not proposal.body.head_vote_declarations
     assert spec.is_ac_vote_ready(store, finalized_subtree(spec, store))
+    vote(spec, store, nodes["B"], 0)
     assert spec.get_ac_vote_head(store) == replace(
         nodes["B1"], payload_status=spec.PAYLOAD_STATUS_PENDING
     )
