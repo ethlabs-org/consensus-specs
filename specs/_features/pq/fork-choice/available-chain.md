@@ -24,12 +24,12 @@
     - [New `sum_head_vote_weights`](#new-sum_head_vote_weights)
     - [New `get_block_and_payload_receipt_time`](#new-get_block_and_payload_receipt_time)
     - [New `get_vote_resolution_time`](#new-get_vote_resolution_time)
-    - [New `get_local_view_from_p2p_messages`](#new-get_local_view_from_p2p_messages)
-    - [New `get_declaration_view`](#new-get_declaration_view)
+    - [New `get_head_vote_messages_by_cutoff`](#new-get_head_vote_messages_by_cutoff)
+    - [New `get_declared_votes_and_readiness`](#new-get_declared_votes_and_readiness)
     - [New `is_usable_proposer_support`](#new-is_usable_proposer_support)
-    - [New `get_proposer_view`](#new-get_proposer_view)
+    - [New `get_votes_declared_in_proposals`](#new-get_votes_declared_in_proposals)
     - [New `compute_merged_view`](#new-compute_merged_view)
-    - [New `get_combined_local_view`](#new-get_combined_local_view)
+    - [New `get_head_votes_by_cutoff`](#new-get_head_votes_by_cutoff)
     - [New `get_equivocating_pubkeys`](#new-get_equivocating_pubkeys)
     - [New `get_viable_ancestor`](#new-get_viable_ancestor)
     - [New `get_live_locks`](#new-get_live_locks)
@@ -305,13 +305,13 @@ def get_vote_resolution_time(
     return max(vote_receipt_time, get_block_and_payload_receipt_time(store, supported_node))
 ```
 
-#### New `get_local_view_from_p2p_messages`
+#### New `get_head_vote_messages_by_cutoff`
 
 *Note*: Builds an AC view from P2P messages using locally observed receipt and
 resolution times.
 
 ```python
-def get_local_view_from_p2p_messages(
+def get_head_vote_messages_by_cutoff(
     store: Store, vote_slot: Slot, receipt_threshold_ms: Uint64, resolution_threshold_ms: Uint64
 ) -> tuple[list[HeadVoteMessage], list[int]]:
     """
@@ -341,14 +341,16 @@ def get_local_view_from_p2p_messages(
     return vote_messages, support_indices
 ```
 
-#### New `get_declaration_view`
+#### New `get_declared_votes_and_readiness`
 
 *Note*: Readiness checks for an exact authenticated vote or two distinct votes
 by the declared validator, regardless of their current ticket counts. The two
 votes enter the view as equivocation evidence without proposer support.
 
 ```python
-def get_declaration_view(store: Store, slot: Slot) -> tuple[set[ACVote], set[ACVote], bool]:
+def get_declared_votes_and_readiness(
+    store: Store, slot: Slot
+) -> tuple[set[ACVote], set[ACVote], bool]:
     tree = get_fg_frame(store).tree
     votes: set[ACVote] = set()
     support: set[ACVote] = set()
@@ -421,18 +423,20 @@ def is_usable_proposer_support(
     )
 ```
 
-#### New `get_proposer_view`
+#### New `get_votes_declared_in_proposals`
 
 *Note*: Builds an AC proposer view. Supporting votes must reference locally
 known blocks. *Full* block support additionally requires a verified payload.
 
 ```python
-def get_proposer_view(store: Store, block_slot: Slot) -> tuple[set[ACVote], set[ACVote]]:
+def get_votes_declared_in_proposals(
+    store: Store, block_slot: Slot
+) -> tuple[set[ACVote], set[ACVote]]:
     """
     Return the held declarations and usable support of the slot's proposals.
     """
 
-    votes, support, _ = get_declaration_view(store, block_slot)
+    votes, support, _ = get_declared_votes_and_readiness(store, block_slot)
     return votes, support
 ```
 
@@ -463,16 +467,16 @@ def compute_merged_view(
     return votes | votes_from_blocks[0], support_votes | votes_from_blocks[1]
 ```
 
-#### New `get_combined_local_view`
+#### New `get_head_votes_by_cutoff`
 
 ```python
-def get_combined_local_view(
+def get_head_votes_by_cutoff(
     store: Store, slot: Slot, receipt_threshold_ms: Uint64, resolution_threshold_ms: Uint64
 ) -> tuple[set[ACVote], set[ACVote]]:
     """
     Return the signed pool's vote set and supporting subset for ``slot``.
     """
-    votes_from_messages = get_local_view_from_p2p_messages(
+    votes_from_messages = get_head_vote_messages_by_cutoff(
         store, slot, receipt_threshold_ms, resolution_threshold_ms
     )
     return compute_merged_view(store, votes_from_messages, (set(), set()))
@@ -985,7 +989,9 @@ def update_confirmation(store: Store, slot: Slot) -> None:
     support_cutoff_ms = (
         compute_time_at_slot_ms(store.genesis_time_ms, slot) + get_support_cutoff_ms()
     )
-    votes, support_votes = get_combined_local_view(store, slot, INFINITE_TIME_MS, support_cutoff_ms)
+    votes, support_votes = get_head_votes_by_cutoff(
+        store, slot, INFINITE_TIME_MS, support_cutoff_ms
+    )
     confirmed = get_confirmed_head(store, fg_frame, votes, support_votes, slot)
 
     # Return if there is no confirmation
@@ -1112,7 +1118,7 @@ def get_ac_proposal(
     assert current_slot > GENESIS_SLOT
 
     fg_frame = get_fg_frame(store)
-    vote_messages, support_indices = get_local_view_from_p2p_messages(
+    vote_messages, support_indices = get_head_vote_messages_by_cutoff(
         store,
         current_slot - 1,
         receipt_threshold_ms=INFINITE_TIME_MS,
@@ -1175,9 +1181,10 @@ head-vote deadline even if it received the declared message.
 ```python
 def is_ac_vote_ready(store: Store) -> bool:
     """
-    Return the current slot's readiness computed by ``get_declaration_view``.
+    Return the current slot's readiness computed by
+    ``get_declared_votes_and_readiness``.
     """
-    _, _, ready = get_declaration_view(store, get_current_slot(store))
+    _, _, ready = get_declared_votes_and_readiness(store, get_current_slot(store))
     return ready
 ```
 
@@ -1209,14 +1216,14 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
         compute_time_at_slot_ms(store.genesis_time_ms, current_slot - 1) + get_view_freeze_ms()
     )
     # Local view
-    local_view = get_local_view_from_p2p_messages(
+    local_view = get_head_vote_messages_by_cutoff(
         store,
         current_slot - 1,
         receipt_threshold_ms=view_freeze_ms,
         resolution_threshold_ms=view_freeze_ms,
     )
     # Proposer view
-    proposer_view = get_proposer_view(store, current_slot)
+    proposer_view = get_votes_declared_in_proposals(store, current_slot)
     # Merge views
     votes, support_votes = compute_merged_view(store, local_view, proposer_view)
     unlock(store, current_slot - 1, votes, support_votes)
@@ -1307,7 +1314,7 @@ def get_head(store: Store) -> ForkChoiceNode:
         slot = current_slot - 1
 
     fg_frame = get_fg_frame(store)
-    votes, support_votes = get_combined_local_view(
+    votes, support_votes = get_head_votes_by_cutoff(
         store, slot, receipt_threshold_ms=INFINITE_TIME_MS, resolution_threshold_ms=INFINITE_TIME_MS
     )
     head = get_head_in_tree(

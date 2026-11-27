@@ -300,7 +300,7 @@ def test_unlock_at_threshold_moves_to_common_ancestor_preserving_fields(spec, tr
     spec.unlock(
         store,
         spec.Slot(10),
-        *spec.get_combined_local_view(
+        *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
         ),
     )
@@ -316,7 +316,7 @@ def test_unlock_below_threshold_keeps_lock(spec, tree):
     spec.unlock(
         store,
         spec.Slot(10),
-        *spec.get_combined_local_view(
+        *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
         ),
     )
@@ -332,7 +332,7 @@ def test_unlock_does_not_move_same_or_newer_slot_lock(spec, tree, lock_slot):
     spec.unlock(
         store,
         spec.Slot(10),
-        *spec.get_combined_local_view(
+        *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
         ),
     )
@@ -351,7 +351,7 @@ def test_unlock_equivocators_count_without_resolved_votes(spec, tree):
     spec.unlock(
         store,
         spec.Slot(10),
-        *spec.get_combined_local_view(
+        *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
         ),
     )
@@ -371,7 +371,7 @@ def test_unlock_equivocator_not_counted_twice(spec, tree):
     spec.unlock(
         store,
         spec.Slot(10),
-        *spec.get_combined_local_view(
+        *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
         ),
     )
@@ -386,7 +386,7 @@ def test_unlock_counts_duplicate_committee_seats(spec, tree):
     spec.unlock(
         store,
         spec.Slot(10),
-        *spec.get_combined_local_view(
+        *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
         ),
     )
@@ -404,7 +404,7 @@ def test_unlock_full_empty_conflict_moves_to_pending(spec, tree):
     spec.unlock(
         store,
         spec.Slot(10),
-        *spec.get_combined_local_view(
+        *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
         ),
     )
@@ -418,7 +418,7 @@ def test_unlock_removes_expired_locks(spec, tree):
     spec.unlock(
         store,
         spec.Slot(10),
-        *spec.get_combined_local_view(
+        *spec.get_head_votes_by_cutoff(
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
         ),
     )
@@ -605,7 +605,7 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree, at_deadline):
         store.time_ms += spec.get_head_vote_due_ms() - 1
         assert spec.get_ac_vote_head(store) is None
         store.time_ms += 1
-        cast, support = spec.get_proposer_view(store, spec.Slot(11))
+        cast, support = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
         assert cast == support
         assert {v.supported_node for v in cast} == {nodes["B"]}
     head = spec.get_ac_vote_head(store)
@@ -652,11 +652,11 @@ def test_proposer_support_needs_known_verified_head(spec, tree):
         nodes,
         [(unknown, [0, 1], True), (full, [2, 3], True), (nodes["B"], [4, 5], True)],
     )
-    view = spec.get_proposer_view(store, spec.Slot(11))
+    view = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {4, 5})
     # Verifying the payload lets the proposer's support count for the full vote
     store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
-    view = spec.get_proposer_view(store, spec.Slot(11))
+    view = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {2, 3, 4, 5})
 
 
@@ -665,7 +665,7 @@ def test_declarations_keep_individual_support_bits(spec, tree):
     propose_votes(
         spec, store, nodes, [(nodes["B"], [0, 1, 2], True), (nodes["B"], [3, 4, 5], False)]
     )
-    view = spec.get_proposer_view(store, spec.Slot(11))
+    view = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {0, 1, 2})
 
 
@@ -680,15 +680,15 @@ def test_equivocation_holds_declaration_without_creating_vote_weight(spec, tree)
     store.head_vote_message_receipt_times.clear()
     vote(spec, store, nodes["P"], 0)
     assert not spec.is_ac_vote_ready(store)
-    assert spec.get_proposer_view(store, spec.Slot(11)) == (set(), set())
+    assert spec.get_votes_declared_in_proposals(store, spec.Slot(11)) == (set(), set())
     freeze = at_slot(spec, 10) + spec.get_view_freeze_ms()
     vote(spec, store, nodes["A"], 0, received=freeze)
     receipts = dict(store.head_vote_message_receipt_times)
     assert spec.is_ac_vote_ready(store)
-    proposer_view = spec.get_proposer_view(store, spec.Slot(11))
+    proposer_view = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
     assert {v.supported_node for v in proposer_view[0]} == {nodes["P"], nodes["A"]}
     assert not proposer_view[1]
-    local_view = spec.get_local_view_from_p2p_messages(store, spec.Slot(10), freeze, freeze)
+    local_view = spec.get_head_vote_messages_by_cutoff(store, spec.Slot(10), freeze, freeze)
     merged, support = spec.compute_merged_view(store, local_view, proposer_view)
     assert spec.get_equivocating_pubkeys(merged) == {spec.XMSSPubkey()}
     assert {v.supported_node for v in support} == {nodes["P"]}
@@ -707,10 +707,10 @@ def test_equivocation_holds_declaration_without_creating_vote_weight(spec, tree)
 def test_proposer_support_follows_bits_when_both_resolve_locally(spec, tree):
     store, nodes = tree
     propose_votes(spec, store, nodes, [(nodes["A"], [0, 1], False), (nodes["B"], [2, 3], True)])
-    proposer_view = spec.get_proposer_view(store, spec.Slot(11))
+    proposer_view = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
     assert merged_voters(spec, proposer_view) == ({0, 1, 2, 3}, {2, 3})
     infinite = spec.INFINITE_TIME_MS
-    local_view = spec.get_combined_local_view(store, spec.Slot(10), infinite, infinite)
+    local_view = spec.get_head_votes_by_cutoff(store, spec.Slot(10), infinite, infinite)
     assert merged_voters(spec, local_view) == ({0, 1, 2, 3}, {0, 1, 2, 3})
 
 
@@ -719,7 +719,7 @@ def test_support_index_addresses_filtered_messages(spec, tree):
     cutoff = at_slot(spec, 11)
     vote(spec, store, nodes["A"], 0, received=cutoff)
     vote(spec, store, nodes["B"], 1, received=cutoff - 1)
-    messages, support = spec.get_local_view_from_p2p_messages(store, spec.Slot(10), cutoff, cutoff)
+    messages, support = spec.get_head_vote_messages_by_cutoff(store, spec.Slot(10), cutoff, cutoff)
     assert [m.validator_index for m in messages] == [1]
     assert support == [0]
 
@@ -738,7 +738,10 @@ def test_unheld_declaration_delays_ready_sibling(spec, tree):
     sibling.body.head_vote_support_bits.append(True)
     store.block_states[nodes["A1"].root] = store.block_states[nodes["B1"].root].copy()
     assert not spec.is_ac_vote_ready(store)
-    assert merged_voters(spec, spec.get_proposer_view(store, spec.Slot(11))) == ({0}, {0})
+    assert merged_voters(spec, spec.get_votes_declared_in_proposals(store, spec.Slot(11))) == (
+        {0},
+        {0},
+    )
 
 
 @pytest.mark.parametrize(
@@ -993,7 +996,7 @@ def test_readiness_matches_proposer_support(spec, tree, status, in_frame):
     propose_votes(spec, store, nodes, [(replace(nodes["A"], payload_status=status), [0], True)])
     usable = in_frame and status == spec.PAYLOAD_STATUS_PENDING
     assert spec.is_ac_vote_ready(store) == usable
-    _, support = spec.get_proposer_view(store, spec.Slot(11))
+    _, support = spec.get_votes_declared_in_proposals(store, spec.Slot(11))
     assert bool(support) == usable
 
 
@@ -1212,7 +1215,7 @@ def test_cross_branch_head_vote_identity(spec, tree):
             spec.validate_head_vote_gossip(seen, store, message, store.time_ms, {})
         spec.on_head_vote_message(store, message)
     infinite = spec.INFINITE_TIME_MS
-    votes, _ = spec.get_combined_local_view(store, slot, infinite, infinite)
+    votes, _ = spec.get_head_votes_by_cutoff(store, slot, infinite, infinite)
     assert {vote.supported_node for vote in votes} == {nodes["P"], nodes["A"], nodes["B"]}
     assert spec.get_equivocating_pubkeys(votes) == {spec.XMSSPubkey(spec.xmss.SkToPk(1))}
     store.ac_tally_root = nodes["B"].root
@@ -1275,7 +1278,7 @@ def test_vote_resolution_enforces_status_in_both_arrival_orders(
         post_state = store.block_states.pop(root)
         spec.on_head_vote_message(store, message)
         assert (
-            spec.get_local_view_from_p2p_messages(
+            spec.get_head_vote_messages_by_cutoff(
                 store, spec.Slot(11), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
             )[1]
             == []
@@ -1288,7 +1291,7 @@ def test_vote_resolution_enforces_status_in_both_arrival_orders(
     else:
         with pytest.raises(AssertionError):
             spec.on_head_vote_message(store, message)
-    view = spec.get_local_view_from_p2p_messages(
+    view = spec.get_head_vote_messages_by_cutoff(
         store, spec.Slot(11), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
     )
     assert view[1] == ([0] if valid else [])
