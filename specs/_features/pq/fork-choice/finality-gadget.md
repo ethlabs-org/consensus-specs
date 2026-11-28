@@ -25,8 +25,8 @@ The finality gadget supplies the viable frame for the
 [AC locks](./available-chain.md#new-get_live_locks) for the FG source. Both use
 the shared [fork-choice store](./local-store.md#modified-store).
 
-The frame's finalized root and P-U viability rule follow the
-[verified-consensus P-U adoption](https://github.com/ethlabs-org/verified-consensus/commit/fa7e37a25f573eaf054776d85380a9998f024d9e).
+The frame is rooted at the finalized block. For the root and viability rule, see
+[verified-consensus](https://github.com/ethlabs-org/verified-consensus/commit/fa7e37a25f573eaf054776d85380a9998f024d9e).
 
 ## Helpers
 
@@ -82,7 +82,9 @@ def get_viable_subtree(
 ```python
 def is_fg_viable_block(store: Store, block_root: Root) -> bool:
     """
-    Return ``True`` if the block passes the FG height and justification test.
+    A block is viable if its height is at least the maximum known height, or
+    one below it when the justified checkpoint is at a lower height than the
+    block or the block descends from or equals the justified checkpoint's block.
     """
     height = get_block_state(store, block_root).target_checkpoint.height
     if height >= store.max_height:
