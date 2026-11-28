@@ -25,12 +25,8 @@ The finality gadget supplies the viable frame for the
 [AC locks](./available-chain.md#new-get_live_locks) for the FG source. Both use
 the shared [fork-choice store](./local-store.md#modified-store).
 
-*Provisional*: The frame is rooted at the finalized block and uses the P-U
-viability rule from the
-[verified-consensus adoption series](https://github.com/ethlabs-org/verified-consensus/commit/528d89635a0a0af87ec6c33d074409118e51edbb).
-That series compiles without errors or `sorry` in `Solution` and passed the fast
-tier and Codex and Astra reviews. This spec may be adjusted when the series
-lands on `main`.
+The frame's finalized root and P-U viability rule follow the
+[verified-consensus P-U adoption](https://github.com/ethlabs-org/verified-consensus/commit/fa7e37a25f573eaf054776d85380a9998f024d9e).
 
 ## Helpers
 
