@@ -115,13 +115,15 @@ The `FinalitySigningRecord` tracks a validator's FG signing history. A separate
 record is maintained for each validator key, independently of whether its
 attestations are included on chain.
 
+Height votes are deduplicated using the target and timeout roots, as in the
+[verified-consensus validator client](https://github.com/ethlabs-org/verified-consensus/commit/1b251cbe89f0e0187c25f50ef30a4f914a2ade6a).
+
 ```python
 @dataclass
 class FinalitySigningRecord:
     targets: dict[Height, Root]
     timeouts: dict[Height, set[Root]]
     finality_locks: dict[Height, Root]
-    entries: dict[Height, set[Root]]
     # [New in PQ]
     rounds: set[Round]
 ```
@@ -132,7 +134,6 @@ history:
 - `targets[h]`: the first target voted for at height `h`.
 - `timeouts[h]`: the targets named by timeouts signed at height `h`.
 - `finality_locks[h]`: the block named by a finality vote at height `h`.
-- `entries[h]`: entries named by any height vote at height `h`.
 - `rounds`: rounds in which an attestation was signed. An attestation is signed
   at the XMSS leaf of its round, so a second attestation in a round would reuse
   the leaf.
@@ -751,7 +752,7 @@ def is_finality_pair_permitted(record: FinalitySigningRecord, checkpoint: Height
     previous_target = record.targets.get(height)
     if previous_target is not None and previous_target != root:
         return False
-    if not record.timeouts.get(height, set()) <= {root}:
+    if record.timeouts.get(height):
         return False
     lock = record.finality_locks.get(height)
     return lock is None or lock == root
@@ -787,12 +788,12 @@ def get_height_vote(
     lock = record.finality_locks.get(height)
     if lock is not None and lock != root:
         return None
-    if height in record.timeouts:
-        return target.copy(), True
     previous_target = record.targets.get(height)
-    if previous_target is not None and previous_target != root:
-        return target.copy(), True
-    return target.copy(), False
+    if previous_target is not None and previous_target == root:
+        return None
+    if root in record.timeouts.get(height, set()):
+        return None
+    return target.copy(), previous_target is not None
 ```
 
 ##### Construct data
@@ -813,11 +814,6 @@ def get_finality_attestation_data(
     if vote is None:
         return None
     target, timeout = vote
-
-    entries = record.entries.get(target.height, set())
-    if (not timeout and len(entries) > 0) or target.root in entries:
-        return None
-
     finality = get_finality_vote(record, entry_state)
     return AttestationData(target=target, timeout=Boolean(timeout), finality=finality)
 ```
@@ -839,9 +835,6 @@ def record_finality_attestation(
     assert round not in record.rounds
     record.rounds.add(round)
     height, root = data.target.height, data.target.root
-    if height not in record.entries:
-        record.entries[height] = set()
-    record.entries[height].add(root)
     if data.finality != HeightCheckpoint.empty():
         record.finality_locks[data.finality.height] = data.finality.root
     if data.timeout:

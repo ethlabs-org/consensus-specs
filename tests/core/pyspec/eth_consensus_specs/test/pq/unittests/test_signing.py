@@ -16,9 +16,7 @@ def spec(preset):
 
 @pytest.fixture
 def record(spec):
-    return spec.FinalitySigningRecord(
-        targets={}, timeouts={}, finality_locks={}, entries={}, rounds=set()
-    )
+    return spec.FinalitySigningRecord(targets={}, timeouts={}, finality_locks={}, rounds=set())
 
 
 def checkpoint(spec, height, root_byte):
@@ -48,7 +46,6 @@ def test_repeated_target_suppresses_duplicate(spec, record):
     spec.record_finality_attestation(record, data, spec.Round(len(record.rounds)))
 
     assert record.targets == {target.height: target.root}
-    assert record.entries == {target.height: {target.root}}
     assert record.timeouts == {}
     assert record.finality_locks == {}
     assert spec.get_finality_attestation_data(record, target, entry) is None
@@ -73,10 +70,8 @@ def test_distinct_targets_timeout_and_suppress_finality(spec, record):
 
     assert record.targets == {first.height: first.root}
     assert record.timeouts == {first.height: {second.root}}
-    assert record.entries == {first.height: {first.root, second.root}}
     assert not spec.is_finality_pair_permitted(record, first)
     assert not spec.is_finality_pair_permitted(record, second)
-    assert spec.get_height_vote(record, first) == (first, True)
     for target in (first, second):
         assert spec.get_finality_attestation_data(record, target, entry) is None
 
@@ -126,6 +121,7 @@ def test_finality_pair_comes_from_entry_state(spec, record):
     newer = checkpoint(spec, 2, 2)
     blocked = checkpoint(spec, 3, 3)
     empty = spec.HeightCheckpoint.empty()
+    record.targets[blocked.height] = blocked.root
     record.timeouts[blocked.height] = {checkpoint(spec, 3, 9).root}
 
     # The previous height is justified: the predecessor is offered, also when

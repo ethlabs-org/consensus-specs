@@ -215,9 +215,7 @@ def test_one_block_finalizes_predecessor_and_justifies_height(spec, monkeypatch)
         eip8483, [eip8483.MAX_EFFECTIVE_BALANCE] * 64, eip8483.MAX_EFFECTIVE_BALANCE
     )
     state = upgrade_registered_to_pq(spec, pre)
-    record = spec.FinalitySigningRecord(
-        targets={}, timeouts={}, finality_locks={}, entries={}, rounds=set()
-    )
+    record = spec.FinalitySigningRecord(targets={}, timeouts={}, finality_locks={}, rounds=set())
 
     def apply_block_with_client_votes(slot, entry_state):
         spec.process_slots(state, spec.Slot(slot))
@@ -280,9 +278,7 @@ def run_heights(spec, monkeypatch, withheld, delay, keep_previous):
     # state is the entry state of height 1
     entry_states = {state.target_checkpoint.root: state.copy()}
     records = {
-        v: spec.FinalitySigningRecord(
-            targets={}, timeouts={}, finality_locks={}, entries={}, rounds=set()
-        )
+        v: spec.FinalitySigningRecord(targets={}, timeouts={}, finality_locks={}, rounds=set())
         for v in range(count)
     }
     pool = []
